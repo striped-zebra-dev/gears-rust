@@ -244,7 +244,7 @@ The adapter populates `Context` fields from the record before calling the handle
 |-----------------|-------------------|------|
 | `invocation_id` | `InvocationRecord.invocation_id` | `String` |
 | `function_id` | `InvocationRecord.function_id` | `String` (GTS ID) |
-| `function_version` | `InvocationRecord.function_version` | `String` |
+| `function_version` | `InvocationRecord.function_version` | `String` — semantic version of the function deployment (`^\d+\.\d+\.\d+$`); distinct from the GTS chain version in `function_id` |
 | `tenant_id` | `InvocationRecord.tenant_id` | `String` |
 | `attempt_number` | Adapter-tracked retry count | `u32` (1-indexed) |
 | `correlation_id` | `InvocationObservability.correlation_id` | `String` |

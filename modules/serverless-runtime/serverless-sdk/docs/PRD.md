@@ -288,6 +288,9 @@ Field names and optionality MUST match the runtime's `CompensationContext` schem
 The crate MUST provide a `Context` struct with the following fields:
 
 - From `InvocationRecord`: `invocation_id`, `function_id`, `function_version`, `tenant_id`.
+  `function_version` is the semantic version of the function deployment (e.g., `1.2.3`),
+  not the GTS schema version embedded in `function_id`. The two are independently sourced
+  from `InvocationRecord`.
 - From `InvocationObservability`: `correlation_id: String` (required in
   `InvocationObservability`), `trace_id: Option<String>`, `span_id: Option<String>`.
 - Adapter-supplied: `attempt_number: u32` (1-indexed; the adapter tracks retry count
