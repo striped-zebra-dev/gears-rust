@@ -15,7 +15,6 @@ Updated: 2026-03-30 by Constructor Tech
   - [1.4 Glossary](#14-glossary)
 - [2. Actors](#2-actors)
   - [2.1 Human Actors](#21-human-actors)
-  - [2.2 System Actors](#22-system-actors)
 - [3. Operational Concept & Environment](#3-operational-concept--environment)
   - [3.1 Module-Specific Environment Constraints](#31-module-specific-environment-constraints)
 - [4. Scope](#4-scope)
@@ -149,35 +148,18 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 
 **ID**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
-- **Role**: A platform developer building an adapter crate (e.g., Starlark, Temporal).
-  Implements the SDK handler contracts (`FunctionHandler`, `WorkflowHandler`) and
-  wires the `trace` module for invocation instrumentation. This is a
-  *development-time* relationship: the adapter developer reads documentation,
-  implements the handler interfaces, and maps engine-specific data into `Context`
-  and `Environment`.
+- **Role**: A platform developer building an adapter crate (e.g., Starlark, Temporal)
+  within the Serverless Runtime. Implements the SDK handler contracts
+  (`FunctionHandler`, `WorkflowHandler`), wires the `trace` module for invocation
+  instrumentation, and integrates SDK-defined types (`Context`, `ServerlessSdkError`)
+  into the runtime's invocation-routing and error-categorisation logic.
 - **Needs**: Ergonomic, well-documented handler contracts they can implement from
   the SDK documentation alone; instrumentation utilities that emit consistent
   timeline events without manual wiring; unambiguous contracts for how `Context`
-  and `Environment` are populated from engine data.
-
-### 2.2 System Actors
-
-#### Serverless Runtime
-
-**ID**: `cpt-cf-serverless-sdk-core-actor-runtime`
-
-- **Role**: The CyberFabric Serverless Runtime module
-  (`cpt-cf-serverless-runtime-principle-impl-agnostic`) that owns `InvocationRecord`,
-  manages invocation lifecycle, and routes invocations to adapters. Unlike the
-  Adapter Developer (who implements SDK handler contracts), the runtime is a
-  *structural integration consumer*: it depends directly on SDK-defined types
-  (`Context`, `ServerlessSdkError`) in its own invocation-routing and
-  error-categorisation logic — independently of any particular adapter crate.
-- **Needs**: SDK-defined types that remain structurally stable across minor versions
-  so that the runtime's routing and error-categorisation logic does not require
-  changes when adapters are updated; a consistent mapping from `ServerlessSdkError`
-  variants to `RuntimeErrorCategory` for retry and dead-letter routing decisions;
-  `Context` fields that map unambiguously and exhaustively from `InvocationRecord`.
+  and `Environment` are populated from engine data; SDK-defined types that remain
+  structurally stable across minor versions; a consistent mapping from
+  `ServerlessSdkError` variants to `RuntimeErrorCategory` for retry and dead-letter
+  routing decisions.
 
 ---
 
@@ -297,6 +279,11 @@ The crate MUST provide a `Context` struct with the following fields:
   independently — the runtime's `InvocationRecord` does not expose an attempt counter,
   though retry count is tracked at the persistence layer).
 - Computed: `deadline` derived from `FunctionLimits.timeout_seconds` at invocation start.
+
+Adapter implementers validating `Context` fields should distinguish structural/type-level
+violations (e.g., missing required field, wrong type) — which map to `InvalidInput` — from
+business-rule rejections (e.g., tenant not allowed to invoke this function) — which map to
+`UserError` (see §5.5 "InvalidInput vs UserError").
 
 - **Rationale**: Maps the runtime's invocation record to the minimal SDK surface handlers need.
   Follows `cpt-cf-serverless-runtime-principle-impl-agnostic`: no engine-specific fields.
@@ -512,7 +499,7 @@ surface, stability classifications, and breaking change policies, see [DESIGN.md
 
 ## 8. Use Cases
 
-#### Adapter Developer Implements a FunctionHandler
+### Adapter Developer Implements a FunctionHandler
 
 - [ ] `p1` - **ID**: `cpt-cf-serverless-sdk-core-usecase-impl-handler`
 
@@ -543,7 +530,7 @@ surface, stability classifications, and breaking change policies, see [DESIGN.md
 - **Deadline exceeded**: `FunctionHandler` checks deadline via context, returns `Timeout`;
   mapped to `RuntimeErrorCategory::Timeout`.
 
-#### Adapter Developer Wires SDK into an Adapter Crate
+### Adapter Developer Wires SDK into an Adapter Crate
 
 - [ ] `p1` - **ID**: `cpt-cf-serverless-sdk-core-usecase-wire-adapter`
 
@@ -570,7 +557,7 @@ surface, stability classifications, and breaking change policies, see [DESIGN.md
 
 ---
 
-#### Adapter Developer Implements Workflow Compensation
+### Adapter Developer Implements Workflow Compensation
 
 - [ ] `p1` - **ID**: `cpt-cf-serverless-sdk-core-usecase-impl-compensation`
 
