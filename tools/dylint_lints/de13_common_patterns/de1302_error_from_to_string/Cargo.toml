@@ -32,6 +32,10 @@ name = "bad_tryfrom_assoc_error"
 path = "ui/bad_tryfrom_assoc_error.rs"
 
 [[example]]
+name = "bad_macro_rules"
+path = "ui/bad_macro_rules.rs"
+
+[[example]]
 name = "good_from_preserve"
 path = "ui/good_from_preserve.rs"
 
@@ -40,8 +44,8 @@ name = "good_unrelated_error"
 path = "ui/good_unrelated_error.rs"
 
 [[example]]
-name = "good_macro_expansion"
-path = "ui/good_macro_expansion.rs"
+name = "good_from_u32"
+path = "ui/good_from_u32.rs"
 
 [dependencies]
 clippy_utils.workspace = true

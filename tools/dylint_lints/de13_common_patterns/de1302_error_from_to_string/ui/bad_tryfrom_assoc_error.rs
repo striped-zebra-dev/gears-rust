@@ -4,15 +4,17 @@
 
 use std::fmt;
 
-// Positive case for the TryFrom::Error gate: source and target are both
-// plain non-error types, but the associated `type Error = MyErr` implements
-// `std::error::Error`. The body stringifies a locally-constructed `MyErr`
-// before wrapping it — that's a chain loss on the assoc Error type, which
-// the tightened receiver check also accepts.
+// Positive case for the TryFrom::Error gate + tightened receiver check:
+// source and target are both plain non-error types, but the associated
+// `type Error = MyErr` implements `std::error::Error`. The body takes a
+// pre-existing `MyErr` whose `.source()` carries a real `ParseIntError`
+// chain, then stringifies it while building a new `MyErr` — dropping the
+// `ParseIntError` cause.
 
 #[derive(Debug)]
 struct MyErr {
     msg: String,
+    source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
 impl fmt::Display for MyErr {
@@ -21,7 +23,18 @@ impl fmt::Display for MyErr {
     }
 }
 
-impl std::error::Error for MyErr {}
+impl std::error::Error for MyErr {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|s| s as _)
+    }
+}
+
+fn parse_strict(s: &str) -> Result<u32, MyErr> {
+    s.parse::<u32>().map_err(|e| MyErr {
+        msg: format!("parse failed for {s:?}"),
+        source: Some(Box::new(e)),
+    })
+}
 
 struct PlainData(u32);
 struct PlainOutput(u32);
@@ -31,9 +44,10 @@ impl TryFrom<PlainData> for PlainOutput {
 
     fn try_from(value: PlainData) -> Result<Self, Self::Error> {
         if value.0 == 0 {
-            let inner = MyErr { msg: "zero not allowed".into() };
+            // `inner` carries a real `.source()` chain (ParseIntError).
+            let inner = parse_strict("not a number").unwrap_err();
             // Should trigger DE1302 - to_string
-            return Err(MyErr { msg: inner.to_string() });
+            return Err(MyErr { msg: inner.to_string(), source: None });
         }
         Ok(PlainOutput(value.0))
     }

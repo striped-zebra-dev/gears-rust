@@ -9,9 +9,11 @@ extern crate rustc_span;
 
 use clippy_utils::ty::implements_trait;
 use rustc_hir::def::{DefKind, Res};
+use rustc_hir::def_id::DefId;
 use rustc_hir::{self as hir, Expr, ExprKind, ImplItemKind, ItemKind, QPath};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::ty::{Ty, TypeckResults};
+use rustc_span::hygiene::{ExpnKind, MacroKind};
 
 dylint_linting::declare_late_lint! {
     /// ### What it does
@@ -38,8 +40,21 @@ dylint_linting::declare_late_lint! {
     /// associated `Error` type), eliminating false positives from name-based
     /// heuristics. Inside the matched body, `.to_string()` is only flagged when the
     /// receiver type is the source parameter type itself (or the `TryFrom::Error`
-    /// assoc type) — `.to_string()` on unrelated error values used for logging is
-    /// left alone. Macro-expanded `.to_string()` calls are also ignored.
+    /// assoc type) *and* that type implements `Error` — `.to_string()` on unrelated
+    /// error values used for logging, or on plain non-error source parameters (e.g.
+    /// `impl From<u32>`), is left alone.
+    ///
+    /// ### Known gaps
+    ///
+    /// Attribute macros, derive macros, and compiler desugarings are skipped so
+    /// the lint doesn't flag synthesized `.to_string()` calls. `macro_rules!` and
+    /// bang proc-macro expansions are still checked — `render!(err)` that expands
+    /// to `err.to_string()` is flagged like hand-written code.
+    ///
+    /// **`format!("{}", err)`, `write!(buf, "{}", err)`, and similar macros are
+    /// NOT caught.** They destroy the chain through `Display::fmt` rather than
+    /// `ToString::to_string`, so this lint never sees them. If you rely on DE1302
+    /// for enforcement, you also need a sibling check on format-arg macros.
     ///
     /// ### Example
     ///
@@ -111,28 +126,69 @@ impl<'tcx> ToStringVisitor<'tcx, '_> {
         });
     }
 
-    /// Returns true if `ty` (after peeling references) is the source parameter
-    /// type of the impl, or the `TryFrom::Error` associated type. This is the
-    /// tightened receiver check: only the specific types whose chain would be
-    /// destroyed by stringification inside this impl are flagged.
+    /// Returns true if `ty` (after peeling references) is a type whose
+    /// stringification inside this impl would destroy an error chain:
+    /// - The `TryFrom::Error` associated type (if present); or
+    /// - The source parameter type *and* that source type implements `Error`.
+    ///
+    /// The `implements_error` re-check on `source_ty` is important — the
+    /// impl-level gate accepts an impl when *either* source or target is an
+    /// Error, so without this check `impl From<u32> for MyErr` would flag
+    /// `n.to_string()` even though `u32` has no chain to lose.
     fn is_relevant_receiver(&self, ty: Ty<'tcx>) -> bool {
         let inner = ty.peel_refs();
-        inner == self.source_ty || self.error_assoc_ty.is_some_and(|e| inner == e)
+        if let Some(e) = self.error_assoc_ty
+            && inner == e
+        {
+            return true;
+        }
+        inner == self.source_ty && implements_error(self.cx, inner)
+    }
+}
+
+/// Returns true if `def_id` is `core::string::ToString::to_string`.
+///
+/// Walks up from the associated fn to its containing trait and compares to
+/// the `ToString` diagnostic item. Shared by the MethodCall and UFCS arms so
+/// both paths verify they're actually hitting the trait method, not a bare
+/// inherent method named `to_string`.
+fn is_to_string_def<'tcx>(cx: &LateContext<'tcx>, def_id: DefId) -> bool {
+    let Some(to_string_trait) = cx.tcx.get_diagnostic_item(rustc_span::sym::ToString) else {
+        return false;
+    };
+    cx.tcx.trait_of_assoc(def_id) == Some(to_string_trait)
+}
+
+/// Returns true if the outer expansion of `span` is one we want to silently
+/// skip — specifically attribute macros, derive macros, and compiler
+/// desugarings. `macro_rules!` and bang proc-macro expansions are NOT
+/// skipped: if a user-defined macro expands to `.to_string()` on a source
+/// error, the chain is just as lost as if they had written it inline.
+fn is_hidden_expansion(span: rustc_span::Span) -> bool {
+    match span.ctxt().outer_expn_data().kind {
+        ExpnKind::Macro(MacroKind::Attr | MacroKind::Derive, _) | ExpnKind::Desugaring(_) => true,
+        _ => false,
     }
 }
 
 impl<'tcx> hir::intravisit::Visitor<'tcx> for ToStringVisitor<'tcx, '_> {
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
-        // Skip any expression that came from a macro expansion (derive macros,
-        // format/tracing macros, `?` desugaring, future format-args lowering).
-        // We still descend into children in case the macro wraps user-written
-        // subexpressions whose spans are attributed to the caller.
-        let in_macro = expr.span.from_expansion();
+        // Skip expansions we can't meaningfully attribute to user intent
+        // (attr/derive macros, compiler desugarings). We still descend into
+        // children in case the expansion wraps user-written subexpressions
+        // whose spans are attributed to the caller.
+        let hidden = is_hidden_expansion(expr.span);
 
         match expr.kind {
-            // Method call form: `e.to_string()`.
-            ExprKind::MethodCall(seg, recv, args, _) if !in_macro => {
-                if seg.ident.name.as_str() == "to_string" && args.is_empty() {
+            // Method call form: `e.to_string()`. Resolve the method's DefId
+            // through typeck and verify it lives in `core::string::ToString`
+            // — a bare inherent `fn to_string` shouldn't be flagged.
+            ExprKind::MethodCall(seg, recv, args, _) if !hidden => {
+                if seg.ident.name.as_str() == "to_string"
+                    && args.is_empty()
+                    && let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id)
+                    && is_to_string_def(self.cx, def_id)
+                {
                     let recv_ty = self.typeck.expr_ty(recv);
                     if self.is_relevant_receiver(recv_ty) {
                         self.emit(expr.span);
@@ -140,7 +196,7 @@ impl<'tcx> hir::intravisit::Visitor<'tcx> for ToStringVisitor<'tcx, '_> {
                 }
             }
             // UFCS form: `ToString::to_string(&e)` or `<E as ToString>::to_string(&e)`.
-            ExprKind::Call(callee, [arg]) if !in_macro => {
+            ExprKind::Call(callee, [arg]) if !hidden => {
                 if is_to_string_path(self.cx, callee) {
                     let arg_ty = self.typeck.expr_ty(arg);
                     if self.is_relevant_receiver(arg_ty) {
@@ -178,14 +234,7 @@ fn is_to_string_path<'tcx>(cx: &LateContext<'tcx>, callee: &Expr<'tcx>) -> bool 
     let Res::Def(DefKind::AssocFn, def_id) = res else {
         return false;
     };
-    let Some(to_string_trait) = cx.tcx.get_diagnostic_item(rustc_span::sym::ToString) else {
-        return false;
-    };
-    // Walk up from the assoc fn to its trait (if any) and compare.
-    let Some(trait_did) = cx.tcx.trait_of_assoc(def_id) else {
-        return false;
-    };
-    trait_did == to_string_trait
+    is_to_string_def(cx, def_id)
 }
 
 impl<'tcx> LateLintPass<'tcx> for De1302ErrorFromToString {

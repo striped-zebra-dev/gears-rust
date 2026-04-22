@@ -4,10 +4,10 @@
 
 use std::fmt;
 
-// Negative case: `.to_string()` calls produced by macro expansion are
-// ignored. This covers derive macros, tracing/format macros, `?` desugaring,
-// and anything else that might synthesize a stringification the user didn't
-// literally write.
+// Positive case: `macro_rules!` expansions that contain `.to_string()` on
+// the source error are NOT silenced. A user-defined macro that stringifies
+// an error is just as much a chain-loss pattern as hand-written code, so
+// the lint still fires through the expansion.
 
 #[derive(Debug)]
 struct DatabaseError(String);
@@ -31,17 +31,15 @@ impl fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-// A user macro whose expansion includes `.to_string()` on an error.
 macro_rules! render_err {
     ($e:expr) => {
-        $e.to_string() // Should not trigger DE1302 - to_string
+        // Should trigger DE1302 - to_string
+        $e.to_string()
     };
 }
 
 impl From<DatabaseError> for AppError {
     fn from(e: DatabaseError) -> Self {
-        // The `.to_string()` lives inside the macro expansion, so its span
-        // carries `from_expansion() == true` and the lint skips it.
         AppError(render_err!(e))
     }
 }
