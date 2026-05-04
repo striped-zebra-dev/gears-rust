@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -574,7 +574,7 @@ dependencies = [
  "gts-macros",
  "http",
  "inventory",
- "nix",
+ "nix 0.31.2",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-canonical-errors"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "axum 0.8.9",
  "cf-modkit-canonical-errors-macro",
@@ -2630,7 +2630,7 @@ version = "1.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0aeb26bf5e836cc1c341c8106051b573f1766dfa05aa87f0b98be5e51b02303"
 dependencies = [
- "nix",
+ "nix 0.29.0",
  "serde",
  "winapi",
 ]
@@ -2728,6 +2728,18 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "memoffset",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]

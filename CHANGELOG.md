@@ -9,6 +9,48 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-tr-authz-plugin-v0.1.0...cf-tr-authz-plugin-v0.1.1) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-authz-resolver-sdk, cf-tenant-resolver-sdk, cf-types-registry-sdk
+
+## [0.1.19](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.18...cf-static-tr-plugin-v0.1.19) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-tenant-resolver-sdk, cf-types-registry-sdk
+
+## [0.1.16](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-credstore-plugin-v0.1.15...cf-static-credstore-plugin-v0.1.16) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-credstore-sdk, cf-types-registry-sdk
+
+## [0.1.18](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.17...cf-static-authz-plugin-v0.1.18) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-authz-resolver-sdk, cf-types-registry-sdk
+
+## [0.2.9](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authn-plugin-v0.2.8...cf-static-authn-plugin-v0.2.9) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-types-registry-sdk, cf-authn-resolver-sdk
+
+## [0.1.20](https://github.com/cyberfabric/cyberfabric-core/compare/cf-single-tenant-tr-plugin-v0.1.19...cf-single-tenant-tr-plugin-v0.1.20) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-tenant-resolver-sdk, cf-types-registry-sdk
+
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-rg-tr-plugin-v0.1.0...cf-rg-tr-plugin-v0.1.1) - 2026-05-01
+
+### Other
+
+- updated the following local packages: cf-modkit, cf-tenant-resolver-sdk, cf-types-registry-sdk, cf-resource-group-sdk
+
 ## [0.1.0](https://github.com/cyberfabric/cyberfabric-core/releases/tag/cf-tr-authz-plugin-v0.1.0) - 2026-04-30
 
 ### Added
@@ -2226,7 +2268,7 @@ release-plz updates this file in the Release PR.
 ### Other
 
 - Merge pull request #641 from genericaccount-de/feature/REAL-162-production-hardening-of-cyberfabric-core (by @MikeFalcon77) - #641
-- Add production hardening changes to cyberfabric-core and hyperspot-server, partly REAL-162
+- Add production hardening changes to cyberfabric-core and cf-server, partly REAL-162
 - Merge pull request #540 from KvizadSaderah/feature/500-list-modules-api (by @Artifizer) - #540
 - Merge branch 'main' into fix-oop-example (by @Bechma) - #670
 - - fix oop example (by @Bechma) - #670
