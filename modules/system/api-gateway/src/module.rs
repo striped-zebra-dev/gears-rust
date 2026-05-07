@@ -28,7 +28,6 @@ use tower_http::{
 use tracing::debug;
 
 use crate::middleware::errors::ApiGatewayGatewayError;
-use modkit_canonical_errors::Problem;
 
 /// Map a `tower::timeout` `Elapsed` (or any other unexpected `BoxError`)
 /// into a canonical `application/problem+json` response.
@@ -38,13 +37,13 @@ async fn timeout_to_canonical(err: BoxError) -> axum::response::Response {
     if err.is::<tower::timeout::error::Elapsed>() {
         let canonical =
             ApiGatewayGatewayError::deadline_exceeded("Request exceeded 30s timeout").create();
-        return Problem::from(canonical).into_response();
+        return canonical.into_response();
     }
 
     let canonical =
         modkit_canonical_errors::CanonicalError::internal(format!("request pipeline error: {err}"))
             .create();
-    Problem::from(canonical).into_response()
+    canonical.into_response()
 }
 
 use authn_resolver_sdk::AuthNResolverClient;

@@ -1,12 +1,11 @@
-use axum::http::{Method, Uri};
+use axum::http::Method;
 use axum::response::IntoResponse;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::middleware::common;
 
 use authn_resolver_sdk::{AuthNResolverClient, AuthNResolverError};
-use modkit::api::canonical_prelude::CanonicalProblemMigrationExt;
-use modkit_canonical_errors::{CanonicalError, Problem};
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 
 /// Route matcher for a specific HTTP method (authenticated routes).
@@ -234,9 +233,10 @@ pub async fn authn_middleware(
                 let err = CanonicalError::unauthenticated()
                     .with_reason("MISSING_BEARER")
                     .create();
-                return Problem::from(err)
-                    .with_temporary_request_context(req.uri().path())
-                    .into_response();
+                // `instance` / `trace_id` are filled by the canonical
+                // error middleware (`modkit::api::canonical_error_middleware`)
+                // on the way out — this middleware sits inside its layer.
+                return err.into_response();
             };
 
             match state.authn_client.authenticate(token).await {
@@ -244,14 +244,18 @@ pub async fn authn_middleware(
                     req.extensions_mut().insert(result.security_context);
                     next.run(req).await
                 }
-                Err(err) => authn_error_to_response(&err, req.uri()),
+                Err(err) => authn_error_to_response(&err),
             }
         }
     }
 }
 
 /// Convert `AuthNResolverError` to a canonical Problem Details response.
-fn authn_error_to_response(err: &AuthNResolverError, uri: &Uri) -> axum::response::Response {
+///
+/// `instance` / `trace_id` are filled by the canonical error middleware
+/// (`modkit::api::canonical_error_middleware`) on the way out — this
+/// middleware sits inside its layer.
+fn authn_error_to_response(err: &AuthNResolverError) -> axum::response::Response {
     log_authn_error(err);
     let canonical = match err {
         AuthNResolverError::Unauthorized(_) => CanonicalError::unauthenticated()
@@ -266,9 +270,7 @@ fn authn_error_to_response(err: &AuthNResolverError, uri: &Uri) -> axum::respons
             CanonicalError::internal("authentication infrastructure failure").create()
         }
     };
-    Problem::from(canonical)
-        .with_temporary_request_context(uri.path())
-        .into_response()
+    canonical.into_response()
 }
 
 /// Log authentication errors at appropriate levels.

@@ -6,7 +6,6 @@
 
 pub mod api_dto;
 pub mod canonical_error_layer;
-pub mod canonical_trace;
 pub mod error_layer;
 pub mod odata;
 pub mod openapi_registry;
@@ -68,13 +67,16 @@ pub mod canonical_prelude {
     // Canonical error types
     pub use modkit_canonical_errors::{CanonicalError, Problem, resource_error};
 
-    /// Result type alias matching `prelude::ApiResult` but parameterised on
-    /// canonical `Problem`.
-    pub type ApiResult<T = ()> = std::result::Result<T, Problem>;
-
-    // Migration-time trace/instance helper. See `canonical_trace` module
-    // docs — scheduled for deletion when the canonical error middleware lands.
-    pub use super::canonical_trace::CanonicalProblemMigrationExt;
+    /// Result type alias for handlers using the canonical error catalog.
+    ///
+    /// Returns [`CanonicalError`] (not [`Problem`]) so handler `?` chains
+    /// resolve through `From<DomainError> for CanonicalError` — the
+    /// long-lived per-module mapping. The canonical error middleware
+    /// (`modkit::api::canonical_error_middleware`) converts the
+    /// `CanonicalError` to a wire `Problem` and fills `instance` /
+    /// `trace_id` on the way out, so handlers never need to construct a
+    /// `Problem` themselves.
+    pub type ApiResult<T = ()> = std::result::Result<T, CanonicalError>;
 
     // Same response sugar / OData / axum re-exports as the legacy prelude
     pub use super::response::{JsonBody, JsonPage, created_json, no_content, ok_json};

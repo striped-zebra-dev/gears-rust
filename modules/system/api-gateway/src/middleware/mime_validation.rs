@@ -7,7 +7,6 @@ use http::Method;
 use std::sync::Arc;
 
 use modkit::api::OperationSpec;
-use modkit_canonical_errors::Problem;
 
 use crate::middleware::common;
 use crate::middleware::errors::ApiGatewayGatewayError;
@@ -50,7 +49,7 @@ fn create_unsupported_media_type_error(detail: String, reason: &str) -> Response
     let err = ApiGatewayGatewayError::invalid_argument()
         .with_field_violation("content-type", detail, reason)
         .create();
-    Problem::from(err).into_response()
+    err.into_response()
 }
 
 /// Validate that the content type is in the allowed list.

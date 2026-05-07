@@ -13,8 +13,7 @@ use glob::{MatchOptions, Pattern};
 use crate::config::RoutePoliciesConfig;
 use crate::middleware::common;
 use crate::middleware::errors::ApiGatewayRouteError;
-use modkit::api::canonical_prelude::CanonicalProblemMigrationExt;
-use modkit_canonical_errors::{CanonicalError, Problem};
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 
 /// Compiled scope enforcement rules for efficient runtime matching.
@@ -216,11 +215,12 @@ pub async fn scope_enforcement_middleware(
                 method = %method,
                 "Route policy enforcement denied: no SecurityContext for protected route"
             );
-            let err = CanonicalError::unauthenticated()
+            // `instance` / `trace_id` are filled by the canonical error
+            // middleware (`modkit::api::canonical_error_middleware`) on the
+            // way out — this middleware sits inside its layer.
+            return CanonicalError::unauthenticated()
                 .with_reason("AUTH_REQUIRED")
-                .create();
-            return Problem::from(err)
-                .with_temporary_request_context(req.uri().path())
+                .create()
                 .into_response();
         }
         return next.run(req).await;
@@ -231,9 +231,10 @@ pub async fn scope_enforcement_middleware(
         .rules
         .check(&path, method, security_context.token_scopes())
     {
-        return Problem::from(canonical)
-            .with_temporary_request_context(req.uri().path())
-            .into_response();
+        // `instance` / `trace_id` are filled by the canonical error
+        // middleware (`modkit::api::canonical_error_middleware`) on the
+        // way out — this middleware sits inside its layer.
+        return canonical.into_response();
     }
 
     next.run(req).await
@@ -244,6 +245,7 @@ pub async fn scope_enforcement_middleware(
 mod tests {
     use super::*;
     use crate::config::RoutePolicyRule;
+    use modkit_canonical_errors::Problem;
 
     fn build_config(enabled: bool, routes: Vec<(&str, Vec<&str>)>) -> RoutePoliciesConfig {
         build_config_with_methods(

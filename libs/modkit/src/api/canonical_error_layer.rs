@@ -401,6 +401,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn falls_back_to_span_id_when_no_trace_headers_present() {
+        // Parity with the `sets_trace_id_when_in_span` test the legacy
+        // `CanonicalProblemMigrationExt` trait file used to carry: when
+        // none of `traceparent` / `x-trace-id` / `x-request-id` is set,
+        // the middleware fills `trace_id` from `tracing::Span::current().id()`.
+        use tracing::Instrument;
+        use tracing_subscriber::fmt;
+
+        // Thread-local subscriber so the assigned span ID is observable;
+        // `set_default` returns a guard that restores the previous default
+        // when dropped.
+        let subscriber = fmt().with_test_writer().finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let span = tracing::info_span!("span_id_fallback_test");
+        let span_id = span
+            .id()
+            .expect("the test subscriber must assign an ID to the span")
+            .into_u64()
+            .to_string();
+
+        let problem: Problem = CanonicalError::internal("boom").create().into();
+        let app = build_app(move || problem_response(&problem, StatusCode::INTERNAL_SERVER_ERROR));
+
+        let req = Request::builder()
+            .uri("/api/v1/widgets/42")
+            .body(Body::empty())
+            .unwrap();
+
+        // `.instrument(span)` makes `span` the current span every time the
+        // request future is polled, so `Span::current().id()` inside the
+        // middleware (after `next.run(...).await`) resolves to `Some(span)`.
+        let res = app.oneshot(req).instrument(span).await.unwrap();
+        let problem = body_to_problem(res).await;
+
+        assert_eq!(
+            problem.trace_id.as_deref(),
+            Some(span_id.as_str()),
+            "trace_id should fall back to the active span's id when no header is present",
+        );
+    }
+
+    #[tokio::test]
     async fn body_is_valid_json_after_rewrite() {
         let problem: Problem = CanonicalError::internal("boom").create().into();
         let app = build_app(move || problem_response(&problem, StatusCode::INTERNAL_SERVER_ERROR));

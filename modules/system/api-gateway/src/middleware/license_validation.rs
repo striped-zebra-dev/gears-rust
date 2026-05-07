@@ -4,8 +4,6 @@ use axum::response::{IntoResponse, Response};
 use dashmap::DashMap;
 use http::Method;
 use modkit::api::OperationSpec;
-use modkit::api::canonical_prelude::CanonicalProblemMigrationExt;
-use modkit_canonical_errors::Problem;
 use std::sync::Arc;
 
 use crate::middleware::common;
@@ -67,11 +65,12 @@ pub async fn license_validation_middleware(
     // We need first to implement plugin and get its client from client_hub
     // Plugin should provide an interface to get a list of global features (features that are not scoped to particular resource)
     if required.iter().any(|r| r != BASE_FEATURE) {
-        let err = ApiGatewayRouteError::permission_denied()
+        // `instance` / `trace_id` are filled by the canonical error
+        // middleware (`modkit::api::canonical_error_middleware`) on the way
+        // out — this middleware sits inside its layer.
+        return ApiGatewayRouteError::permission_denied()
             .with_reason("LICENSE_FEATURE_REQUIRED")
-            .create();
-        return Problem::from(err)
-            .with_temporary_request_context(req.uri().path())
+            .create()
             .into_response();
     }
 

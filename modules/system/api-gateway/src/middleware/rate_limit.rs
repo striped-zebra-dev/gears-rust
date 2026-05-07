@@ -9,7 +9,7 @@ use axum::{
 use governor::clock::Clock;
 use governor::middleware::StateInformationMiddleware;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
-use modkit_canonical_errors::{CanonicalError, Problem};
+use modkit_canonical_errors::CanonicalError;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -125,7 +125,7 @@ pub async fn rate_limit_middleware(map: RateLimiterMap, mut req: Request, next: 
                 let err = ApiGatewayGatewayError::resource_exhausted("rate limit exceeded")
                     .with_quota_violation("rate_limit", format!("retry_after_seconds={wait_secs}"))
                     .create();
-                let mut response = Problem::from(err).into_response();
+                let mut response = err.into_response();
                 let response_headers = response.headers_mut();
                 response_headers.insert("RateLimit-Policy", policy);
                 response_headers.insert("RateLimit-Limit", burst.clone());
@@ -146,7 +146,7 @@ pub async fn rate_limit_middleware(map: RateLimiterMap, mut req: Request, next: 
         let err = CanonicalError::service_unavailable()
             .with_retry_after_seconds(5)
             .create();
-        return Problem::from(err).into_response();
+        return err.into_response();
     }
 
     next.run(req).await
