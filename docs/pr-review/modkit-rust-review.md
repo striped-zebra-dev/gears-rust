@@ -73,70 +73,18 @@ For each issue include:
 
 # ARCHITECTURE REVIEW (PR-level pass — run before reading individual files)
 
-These checks are applied once per PR, not per file. Read the PR title, body, full file list, and skim the diff structure before answering each item.
+Assess the PR as a whole before examining any file. Read the title, body, full file list, and diff structure. For each statement below, investigate the diff and relevant code, then flag any violations as PR-level comments with a severity and a concrete fix.
 
----
-
-## ARCH-001: Lifecycle Placement
-**Severity**: HIGH
-
-Check that long-running or externally-dependent work is placed at the right phase of the application lifecycle. Blocking startup routines with retry loops, network waits, or saga-style operations prevents the process from signaling readiness, delays health checks, and makes clean shutdown impossible while the operation is in flight.
-
-Look for async operations with high retry counts, external I/O, or wall-clock sleeps placed inside code that must complete before the service is considered ready. If such operations exist in startup, ask: can the process start without them completing? Can a shutdown signal interrupt them mid-wait?
-
----
-
-## ARCH-002: Unguarded Safety Gaps
-**Severity**: HIGH
-
-Code that documents a known correctness limitation in comments but ships no compensating runtime control is a latent incident. Inline comments describing gaps are invisible to operators deploying from config or reading dashboards.
-
-When the diff introduces code that self-documents a known-unsafe behavior, check whether a runtime signal exists that an operator would see before encountering the issue: a startup warning, a config validation error that fires on the dangerous configuration, or a feature flag defaulting to the safe value. If the only signal is a source comment, flag it.
-
----
-
-## ARCH-003: Separation of Concerns
-**Severity**: HIGH
-
-Each layer in a layered architecture has a defined role, and crossing layer boundaries without justification creates coupling that makes code hard to test and evolve. The most common violations are business rules inside infrastructure code, persistence types leaking into the domain model, and entry points performing domain work directly instead of delegating.
-
-Look for imports that cross a layer boundary in the wrong direction, logic that belongs in one layer appearing in another, and new abstractions that mix concerns without a clear rationale.
-
----
-
-## ARCH-004: Data Consistency and Transaction Scope
-**Severity**: HIGH
-
-Multi-step write operations must define what happens when they partially fail. An operation that can commit some steps and not others leaves the system in a state that may require manual intervention to repair, and that state may be invisible until it causes downstream failures.
-
-For any PR that writes to multiple resources, check that every failure arm is covered by a transaction, a rollback, or a defined compensating action. If the operation is a saga with external calls, check that partial completion is detectable and recoverable without operator intervention.
-
----
-
-## ARCH-005: Duplicated Decision Logic
-**Severity**: MEDIUM
-
-When the same decision — a classification, a validity check, a graph traversal, a rule evaluation — is implemented independently in two or more components, the implementations diverge silently over time. A bug fixed in one copy is not fixed in the other, and the compiler provides no signal that the two are supposed to agree.
-
-Look for cases where a component re-derives something another component in the same PR already computed: re-walking a structure, re-checking conditions, re-classifying entities. The same smell appears at the module boundary level — two modules each encoding the same business rule independently — or at the function level, with near-identical logic blocks in different files. The fix is always to make one consumer of the shared logic rather than two producers.
-
----
-
-## ARCH-006: Observability for Operational Anomalies
-**Severity**: MEDIUM
-
-When the system continues in a degraded or unexpected state after an error, that state must be visible to operators through logs and metrics at the right severity level. Events logged below the level operators typically filter at are effectively silent in production.
-
-Check that new fallback paths, skipped steps, or degraded-mode behaviors surface at `warn` or higher. Check that new background jobs or periodic loops emit a failure signal that alerting pipelines can consume. A job that silently absorbs errors and continues gives operators no indication it has stopped doing useful work.
-
----
-
-## ARCH-007: PR Scope and Cohesion
-**Severity**: LOW
-
-A PR that bundles multiple independently shippable features is harder to review accurately, harder to roll back, and harder to bisect after a regression. This is a note for the summary, not a blocking finding — do not post it as a comment on the PR.
-
-If the PR delivers more than one feature that could be merged independently, or mixes behavioral changes with refactoring in a way that makes the actual behavioral delta hard to isolate, note it in the terminal summary table.
+- Long-running work (retries, external I/O, waits) should not block process startup or prevent clean shutdown.
+- Known safety limitations documented only in source comments are invisible to operators — they need a runtime signal.
+- Layer boundaries must be respected: infrastructure must not encode business rules, domain must not import persistence types.
+- Multi-step writes must define a recovery path for every partial-failure arm — no silent half-committed state.
+- The same decision (classification, validity check, traversal) should be computed in one place and consumed elsewhere, not re-implemented independently.
+- Degraded-mode paths, skipped steps, and background failures must surface at `warn` or higher — not swallowed or logged at `info`.
+- Error variants must be semantically distinct; reusing a generic variant for domain-specific conditions breaks pattern-matching by callers.
+- New background tasks and periodic loops must have lifecycle control (cancellation, bounded retries, failure signaling).
+- Shared mutable state and lock scope must be justified; prefer ownership transfer and message passing.
+- If the PR bundles multiple independently shippable changes, note it in the summary (do not post as a PR comment).
 
 ---
 

@@ -76,19 +76,17 @@ Save the diff output for analysis. Extract the HEAD commit SHA — you need it f
 
 ### Step 2: PR-level architecture analysis
 
-With the PR title, body, and diff in hand, assess the PR as a whole before doing a full per-file review. Apply every item in the `# ARCHITECTURE REVIEW` section of `docs/pr-review/modkit-rust-review.md` (ARCH-001 through ARCH-007).
+With the PR title, body, and diff in hand, assess the PR as a whole before doing a full per-file review. Apply every item in the `# ARCHITECTURE REVIEW` section of `docs/pr-review/modkit-rust-review.md`. Some items can be answered from the file list and PR description alone; others require reading relevant code sections — do that now rather than deferring to the per-file pass.
 
-Some items (ARCH-001, ARCH-007) can be answered from the file list and PR description alone. Others (ARCH-002, ARCH-003, ARCH-004, ARCH-006) require reading relevant code sections and comments — do that now rather than deferring to the per-file pass. The goal is to identify structural problems before getting drawn into line-level details.
-
-Record architecture findings. Post them as PR-level issue comments (not inline review comments) using `gh api`:
+Record architecture findings. Post each as a PR-level issue comment (not an inline review comment) using `gh api`:
 
 ```bash
 gh api repos/$REPO/issues/<PR_NUMBER>/comments \
   --method POST \
-  -f body="**[ARCH-002] HIGH**\n\n<issue description>\n\n<fix>"
+  -f body="**HIGH**\n\n<issue description>\n\n<fix>"
 ```
 
-Format each PR-level comment as: `**[<ID>] <SEVERITY>**` on the first line, then a blank line, then the issue, then the fix — matching the inline comment style. ARCH-007 is noted in the terminal summary only — do not post it as a comment.
+Format: `**<SEVERITY>**` on the first line, blank line, issue, blank line, fix. The PR-scope note (last bullet in the checklist) goes to the terminal summary only — do not post it as a comment.
 
 ### Step 3: Identify Rust files in diff
 
@@ -164,10 +162,10 @@ After posting, print a compact summary table to the terminal. Architecture findi
 ## Rust PR Review: #<PR_NUMBER>
 
 ### Architecture
-| # | ID | Sev | Issue | Fix |
-|---|----|-----|-------|-----|
-| 1 | ARCH-001 | HIGH | Long-running saga in init() blocks shutdown | Move to serve() with CancellationToken |
-| 2 | ARCH-002 | HIGH | Multi-replica gap documented but no runtime guard | Add startup warn! or config flag |
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| 1 | HIGH | Long-running saga in startup blocks shutdown | Move to background task with cancellation |
+| 2 | HIGH | Safety gap documented only in comment | Add startup warning or config guard |
 
 ### Code
 | # | ID | Sev | Location | Issue | Fix |
