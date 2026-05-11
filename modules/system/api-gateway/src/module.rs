@@ -478,10 +478,12 @@ impl ApiGateway {
     /// Returns an error if `OpenAPI` specification building fails.
     pub fn build_openapi(&self) -> Result<utoipa::openapi::OpenApi> {
         let config = self.get_cached_config();
+        let prefix = Self::normalize_prefix_path(&config.prefix_path)?;
         let info = modkit::api::OpenApiInfo {
             title: config.openapi.title.clone(),
             version: config.openapi.version.clone(),
             description: config.openapi.description,
+            servers: (!prefix.is_empty()).then_some(prefix).into_iter().collect(),
         };
         self.openapi_registry.build_openapi(&info)
     }
@@ -792,6 +794,36 @@ mod tests {
         assert_eq!(info.get("version").unwrap(), "1.0.0");
         assert_eq!(info.get("description").unwrap(), "Test Description");
     }
+
+    #[test]
+    fn test_openapi_servers_with_prefix() {
+        let mut config = ApiGatewayConfig::default();
+        config.prefix_path = "/cw".to_owned();
+        let api = ApiGateway::new(config);
+
+        let doc = api.build_openapi().unwrap();
+        let json = serde_json::to_value(&doc).unwrap();
+
+        let servers = json.get("servers").expect("servers field should be present");
+        let arr = servers.as_array().expect("servers should be an array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].get("url").unwrap(), "/cw");
+    }
+
+    #[test]
+    fn test_openapi_no_servers_without_prefix() {
+        let config = ApiGatewayConfig::default(); // prefix_path is ""
+        let api = ApiGateway::new(config);
+
+        let doc = api.build_openapi().unwrap();
+        let json = serde_json::to_value(&doc).unwrap();
+
+        // When prefix is empty, servers should be absent (None → omitted from JSON)
+        assert!(
+            json.get("servers").is_none(),
+            "servers should be absent when prefix_path is empty"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -821,22 +853,22 @@ mod normalize_prefix_path_tests {
 
     #[test]
     fn simple_prefix_preserved() {
-        assert_eq!(ApiGateway::normalize_prefix_path("/cf").unwrap(), "/cf");
+        assert_eq!(ApiGateway::normalize_prefix_path("/cw").unwrap(), "/cw");
     }
 
     #[test]
     fn trailing_slash_stripped() {
-        assert_eq!(ApiGateway::normalize_prefix_path("/cf/").unwrap(), "/cf");
+        assert_eq!(ApiGateway::normalize_prefix_path("/cw/").unwrap(), "/cw");
     }
 
     #[test]
     fn leading_slash_prepended_when_missing() {
-        assert_eq!(ApiGateway::normalize_prefix_path("cf").unwrap(), "/cf");
+        assert_eq!(ApiGateway::normalize_prefix_path("cf").unwrap(), "/cw");
     }
 
     #[test]
     fn consecutive_leading_slashes_collapsed() {
-        assert_eq!(ApiGateway::normalize_prefix_path("//cf").unwrap(), "/cf");
+        assert_eq!(ApiGateway::normalize_prefix_path("//cw").unwrap(), "/cw");
     }
 
     #[test]
@@ -857,7 +889,7 @@ mod normalize_prefix_path_tests {
 
     #[test]
     fn surrounding_whitespace_trimmed() {
-        assert_eq!(ApiGateway::normalize_prefix_path("  /cf  ").unwrap(), "/cf");
+        assert_eq!(ApiGateway::normalize_prefix_path("  /cw  ").unwrap(), "/cw");
     }
 
     #[test]

@@ -308,7 +308,7 @@ async fn test_public_routes_with_prefix_accessible() {
                 "enable_docs": true,
                 "cors_enabled": false,
                 "auth_disabled": true, // Using disabled for simplicity in test
-                "prefix_path": "/cf",
+                "prefix_path": "/cw",
             }
         }
     });
@@ -359,7 +359,7 @@ async fn test_public_routes_with_prefix_accessible() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/cf/openapi.json")
+                .uri("/cw/openapi.json")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -578,7 +578,7 @@ async fn test_route_pattern_matching_with_prefix_path_params() {
                 "enable_docs": false,
                 "cors_enabled": false,
                 "auth_disabled": true, // Disabled for test simplicity
-                "prefix_path": "/cf",
+                "prefix_path": "/cw",
             }
         }
     });
@@ -604,7 +604,7 @@ async fn test_route_pattern_matching_with_prefix_path_params() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/cf/tests/v1/api/users/123")
+                .uri("/cw/tests/v1/api/users/123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -621,7 +621,7 @@ async fn test_route_pattern_matching_with_prefix_path_params() {
     let response = router
         .oneshot(
             Request::builder()
-                .uri("/cf/tests/v1/api/users/abc-def-456")
+                .uri("/cw/tests/v1/api/users/abc-def-456")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -767,7 +767,7 @@ async fn create_auth_enabled_with_prefix_router(
                 "enable_docs": false,
                 "cors_enabled": cors_enabled,
                 "auth_disabled": false,
-                "prefix_path": "/cf",
+                "prefix_path": "/cw",
             }
         }
     });
@@ -999,7 +999,7 @@ async fn test_public_route_with_prefix_auth_enabled() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/cf/tests/v1/api/public-ctx")
+                .uri("/cw/tests/v1/api/public-ctx")
                 .body(Body::empty())
                 .unwrap(),
         )

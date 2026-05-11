@@ -178,7 +178,7 @@ async fn real_middlewares_observe_documented_order_with_prefix() -> Result<()> {
                 "bind_addr": "127.0.0.1:0",
                 "cors_enabled": true,
                 "auth_disabled": true,
-                "prefix_path": "/cf",
+                "prefix_path": "/cw",
                 "defaults": {
                     "rate_limit": { "rps": 1, "burst": 1, "in_flight": 64 }
                 },
@@ -216,7 +216,7 @@ async fn real_middlewares_observe_documented_order_with_prefix() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/cf/tests/v1/middleware-order")
+                .uri("/cw/tests/v1/middleware-order")
                 .header("origin", "https://example.com")
                 .header("x-request-id", "fixed-req-1")
                 .header("content-type", "text/plain")
@@ -244,7 +244,7 @@ async fn real_middlewares_observe_documented_order_with_prefix() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/cf/tests/v1/middleware-order")
+                .uri("/cw/tests/v1/middleware-order")
                 .header("origin", "https://example.com")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ok":true}"#))?,
@@ -274,7 +274,7 @@ async fn real_middlewares_observe_documented_order_with_prefix() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/cf/tests/v1/middleware-order")
+                .uri("/cw/tests/v1/middleware-order")
                 .header("origin", "https://example.com")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ok":true}"#))?,

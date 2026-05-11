@@ -178,7 +178,7 @@ async fn rejects_non_base_feature_requirement_with_prefix() {
                 "enable_docs": false,
                 "cors_enabled": false,
                 "auth_disabled": true,
-                "prefix_path": "/cf",
+                "prefix_path": "/cw",
             }
         }
     });
@@ -203,7 +203,7 @@ async fn rejects_non_base_feature_requirement_with_prefix() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/cf/tests/v1/license/bad")
+                .uri("/cw/tests/v1/license/bad")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -276,7 +276,7 @@ async fn allows_base_feature_requirement_with_prefix() {
                 "enable_docs": false,
                 "cors_enabled": false,
                 "auth_disabled": true,
-                "prefix_path": "/cf",
+                "prefix_path": "/cw",
             }
         }
     });
@@ -300,7 +300,7 @@ async fn allows_base_feature_requirement_with_prefix() {
     let response = router
         .oneshot(
             Request::builder()
-                .uri("/cf/tests/v1/license/good")
+                .uri("/cw/tests/v1/license/good")
                 .body(Body::empty())
                 .unwrap(),
         )
