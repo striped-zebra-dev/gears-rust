@@ -497,28 +497,6 @@ fn preferred_instance(err: &DomainError) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// From<DomainError> for Problem
-// ---------------------------------------------------------------------------
-
-// TODO(DE1302): `Problem` (RFC 7807) carries its detail as a String, so the
-// `DomainError` source is intentionally rendered here. If `Problem` ever gains
-// a structured source field, wire it up and drop this allow.
-#[allow(unknown_lints, de1302_error_from_to_string)]
-impl From<DomainError> for Problem {
-    fn from(err: DomainError) -> Self {
-        let gts = gts_type(&err).to_string();
-        let inst = error_instance(&err).to_string();
-        let status = http_status_code(&err);
-        let t = error_title(&err).to_string();
-        let detail = err.to_string();
-
-        Problem::new(status, t, detail)
-            .with_type(gts)
-            .with_instance(inst)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Convenience functions for handlers
 // ---------------------------------------------------------------------------
 
