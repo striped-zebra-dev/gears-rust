@@ -50,6 +50,58 @@ pub trait FieldToColumn<F: FilterField> {
 
     /// Map a DTO filter field to a `SeaORM` column
     fn map_field(field: F) -> Self::Column;
+
+    /// Optional per-field value normalisation. Default returns the
+    /// value unchanged. Implementors override this when the wire
+    /// representation of a field differs from its storage
+    /// representation — e.g. an SDK that exposes a lifecycle column
+    /// as a string enum (`"active"` / `"deleted"`) backed by a
+    /// `SMALLINT` column in the database. The framework calls this
+    /// hook inside [`filter_node_to_condition`] AFTER the validated
+    /// `FilterNode` is built and BEFORE the value is bound into the
+    /// `SeaORM` predicate, so the returned [`ODataValue`] becomes
+    /// the effective value the database sees.
+    ///
+    /// `op` is the operator the value is being bound for:
+    /// [`FilterOp::Eq`] / [`FilterOp::Ne`] / [`FilterOp::Gt`] /
+    /// [`FilterOp::Ge`] / [`FilterOp::Lt`] / [`FilterOp::Le`] /
+    /// [`FilterOp::Contains`] / [`FilterOp::StartsWith`] /
+    /// [`FilterOp::EndsWith`] for binary nodes, and
+    /// [`FilterOp::In`] for membership (`$filter=col in (...)`)
+    /// nodes. Implementors that translate wire shape to storage shape
+    /// SHOULD reject operators whose semantics differ between the two
+    /// shapes — typically the ordered comparisons (`Gt`/`Ge`/`Lt`/`Le`)
+    /// on a categorical column whose numeric storage encoding is not a
+    /// meaningful order over the wire string values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable error string when the wire value is
+    /// invalid for this field (typically: enum string outside the
+    /// allowed set) or when `op` is not supported on the translated
+    /// column. The framework wraps the message as
+    /// `ODataError::InvalidFilter`; the call site (e.g.
+    /// [`paginate_odata_try`]) maps that to the module's validation
+    /// category.
+    fn map_value(_field: F, _op: FilterOp, value: &ODataValue) -> Result<ODataValue, String> {
+        Ok(value.clone())
+    }
+
+    /// Whether `field` is admissible in `$orderby` (and therefore as
+    /// a key in cursor-based pagination). Default `true`. Implementors
+    /// override with `false` when the wire shape of the field differs
+    /// from its storage shape — there is no consistent ordering
+    /// between the two shapes (alphabetical strings vs ordinal
+    /// integers), and the cursor encoding path relies on
+    /// `field.kind()` to read tokens back, which would fail to decode
+    /// a storage-encoded value. The framework checks this in
+    /// `paginate_odata_collect` before composing the effective order
+    /// and rejects the `$orderby` clause as
+    /// [`ODataError::InvalidOrderByField`] — keeping the diagnostic
+    /// at the same site as unknown-field rejections.
+    fn is_orderable(_field: F) -> bool {
+        true
+    }
 }
 
 /// Extended trait for `OData` field mapping including cursor extraction.
@@ -150,9 +202,18 @@ where
 {
     match filter {
         FilterNode::Binary { field, op, value } => {
-            // Map DTO field to database column
+            // Map DTO field to database column. The `map_value` hook
+            // runs per-field-instance and per-operator so a mapper can
+            // translate wire-shape values (e.g. enum-as-string
+            // `"deleted"`) into storage-shape values (e.g. SMALLINT
+            // `3`) without the framework having to know about the
+            // enum encoding, AND reject operators whose semantics
+            // differ between the two shapes (typically the ordered
+            // comparisons). Default impl is identity and accepts every
+            // operator, so existing call sites are unaffected.
             let column = M::map_field(*field);
-            build_binary_condition(column, *op, value)
+            let mapped = M::map_value(*field, *op, value)?;
+            build_binary_condition(column, *op, &mapped)
         }
         FilterNode::InList { field, values } => {
             if values.is_empty() {
@@ -162,7 +223,10 @@ where
             let kind = field.kind();
             let sea_values: Vec<sea_orm::Value> = values
                 .iter()
-                .map(|v| odata_value_to_sea_value_for_kind(v, kind))
+                .map(|v| {
+                    let mapped = M::map_value(*field, FilterOp::In, v)?;
+                    odata_value_to_sea_value_for_kind(&mapped, kind)
+                })
                 .collect::<Result<_, _>>()?;
             Ok(Condition::all().add(Expr::col(column).is_in(sea_values)))
         }
@@ -599,6 +663,23 @@ where
             .clone()
             .ensure_tiebreaker(tiebreaker.0, tiebreaker.1)
     };
+
+    // Reject `$orderby` keys against fields the mapper has flagged as
+    // non-orderable (typically: filter columns whose wire shape
+    // differs from their storage shape — e.g. a SMALLINT-backed enum
+    // exposed as a string on the API surface). Without this guard the
+    // cursor codec would round-trip through `field.kind()` and either
+    // misinterpret the encoded token or hand `SeaORM` a value with
+    // the wrong SQL type. Tiebreakers go through the same gate so a
+    // caller cannot smuggle a non-orderable column in via
+    // `ensure_tiebreaker`.
+    for order_key in &effective_order.0 {
+        let field = F::from_name(&order_key.field)
+            .ok_or_else(|| ODataError::InvalidOrderByField(order_key.field.clone()))?;
+        if !M::is_orderable(field) {
+            return Err(ODataError::InvalidOrderByField(order_key.field.clone()));
+        }
+    }
 
     // Validate cursor consistency (filter hash only)
     if let Some(cur) = &query.cursor
