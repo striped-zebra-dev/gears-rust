@@ -1,6 +1,6 @@
 # Cyber Ware SDLC Kit (Cypilot-compatible)
 
-**ID**: `cf-sdlc`
+**ID**: `cyberware-sdlc`
 **Format**: `Cypilot`
 **Purpose**: Use Cyber Ware’s documentation templates (`docs/spec-templates/*`) and expert checklists (`docs/checklists/*`).
 

@@ -1,8 +1,8 @@
-# Constraints for kit 'cf-sdlc' (migrated from constraints.json)
+# Constraints for kit 'cyberware-sdlc' (migrated from constraints.json)
 
 [artifacts]
 [artifacts.PRD]
-name = "PRD constraints (cf-sdlc)"
+name = "PRD constraints (cyberware-sdlc)"
 description = "Allowed ID kinds in PRD and required/optional downstream references"
 toc = true
 
@@ -317,7 +317,7 @@ required = false
 multiple = false
 
 [artifacts.ADR]
-name = "ADR constraints (cf-sdlc)"
+name = "ADR constraints (cyberware-sdlc)"
 description = "Allowed ID kinds in ADR and required references from DESIGN"
 toc = true
 
@@ -428,7 +428,7 @@ required = false
 multiple = false
 
 [artifacts.DESIGN]
-name = "DESIGN constraints (cf-sdlc)"
+name = "DESIGN constraints (cyberware-sdlc)"
 description = "Allowed ID kinds in DESIGN"
 toc = true
 
@@ -732,7 +732,7 @@ required = false
 multiple = false
 
 [artifacts.DECOMPOSITION]
-name = "DECOMPOSITION constraints (cf-sdlc)"
+name = "DECOMPOSITION constraints (cyberware-sdlc)"
 description = "Allowed ID kinds in DECOMPOSITION"
 toc = true
 
@@ -807,7 +807,7 @@ required = false
 multiple = false
 
 [artifacts.FEATURE]
-name = "FEATURE constraints (cf-sdlc)"
+name = "FEATURE constraints (cyberware-sdlc)"
 description = "Allowed ID kinds in FEATURE"
 toc = true
 
@@ -989,7 +989,7 @@ required = true
 multiple = false
 
 [artifacts.UPSTREAM_REQS]
-name = "UPSTREAM_REQS constraints (cf-sdlc)"
+name = "UPSTREAM_REQS constraints (cyberware-sdlc)"
 description = "Allowed ID kinds in UPSTREAM_REQS and required downstream references to PRD"
 toc = true
 

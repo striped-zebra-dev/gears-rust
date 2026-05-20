@@ -1,4 +1,4 @@
-# Common Rules (cf-sdlc)
+# Common Rules (cyberware-sdlc)
 
 ## Navigation Rules
 
