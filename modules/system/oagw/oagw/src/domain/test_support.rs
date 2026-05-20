@@ -35,21 +35,43 @@ pub fn allow_all_enforcer() -> PolicyEnforcer {
     PolicyEnforcer::new(Arc::new(MockAuthZResolverClient))
 }
 
-/// Install a rustls `CryptoProvider` once per process.
+/// Build a self-signed `rustls::ServerConfig` for localhost / 127.0.0.1.
 ///
-/// Workspace feature unification activates both `aws-lc-rs` and `ring`
-/// on rustls (via gts -> jsonschema), so rustls 0.23 cannot auto-determine
-/// a provider and panics on first TLS construction (pingora `LoadBalancer`
-/// or `HttpProxy::new`). Under `cargo nextest` each test runs in its own
-/// process, so every test that builds a pingora-backed service must
-/// install a provider explicitly.
-pub fn ensure_crypto_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
+/// Installs the process-wide rustls `CryptoProvider` if none is set yet
+/// (idempotent), then generates a self-signed certificate via `rcgen` and
+/// builds a `ServerConfig` with `builder_with_provider`.
+pub fn test_server_config() -> rustls::ServerConfig {
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+    // Ensure a crypto provider is available — tests don't go through
+    // the full bootstrap, so one may not be installed yet.
+    // Mirrors `modkit::bootstrap::init_crypto_provider` provider selection.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
         #[cfg(not(feature = "fips"))]
-        rustls::crypto::aws_lc_rs::default_provider().install_default().ok();
-    });
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        #[cfg(feature = "fips")]
+        let _ = rustls::crypto::default_fips_provider().install_default();
+    }
+
+    let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+    let cert = rcgen::generate_simple_self_signed(subject_alt_names).expect("cert generation");
+
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        cert.signing_key.serialize_der().to_vec(),
+    ));
+
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .expect("no rustls CryptoProvider installed");
+
+    rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .expect("TLS ServerConfig")
 }
 
 /// Mock AuthZ resolver that always allows access for testing.
@@ -662,7 +684,6 @@ impl TestDpBuilder {
             .unwrap_or_else(|| Arc::new(MockAuthZResolverClient));
         let policy_enforcer = PolicyEnforcer::new(authz_client);
 
-        ensure_crypto_provider();
         let server_conf = Arc::new(pingora_core::server::configuration::ServerConf::default());
         let pingora_proxy = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
             Duration::from_secs(10),

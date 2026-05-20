@@ -13,10 +13,7 @@ use hyper::body::{Frame, Incoming};
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use oagw::test_support::AppHarness;
-use rcgen::generate_simple_self_signed;
-use rustls::ServerConfig;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use oagw::test_support::{AppHarness, test_server_config};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
@@ -43,26 +40,7 @@ struct H2MockState {
 /// Start a TLS server on a random port that only accepts HTTP/2 via ALPN.
 /// Returns (addr, shared_state, join_handle).
 async fn start_h2_mock() -> (SocketAddr, Arc<H2MockState>, tokio::task::JoinHandle<()>) {
-    // Workspace feature unification activates both `aws-lc-rs` and `ring` on
-    // rustls (via gts -> jsonschema), so rustls cannot auto-determine the
-    // process-wide CryptoProvider. Install one explicitly before building
-    // the rustls ServerConfig below.
-    oagw::test_support::ensure_crypto_provider();
-
-    // Generate self-signed cert for localhost / 127.0.0.1.
-    let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let cert = generate_simple_self_signed(subject_alt_names).expect("cert generation");
-
-    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        cert.signing_key.serialize_der().to_vec(),
-    ));
-
-    let mut tls_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key_der)
-        .expect("TLS config");
-
+    let mut tls_config = test_server_config();
     // Only advertise h2 — no http/1.1 fallback.
     tls_config.alpn_protocols = vec![b"h2".to_vec()];
     let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
