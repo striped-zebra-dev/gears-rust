@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use modkit_canonical_errors::CanonicalError;
 use modkit_macros::domain_model;
 use modkit_security::SecurityContext;
 use oagw_sdk::api::ServiceGatewayClientV1;
 use oagw_sdk::body::Body;
-use oagw_sdk::error::ServiceGatewayError;
 use uuid::Uuid;
 
 use super::{ControlPlaneService, DataPlaneService};
-use crate::domain::error::DomainError;
 use crate::domain::model;
 
 /// Facade that implements the public `ServiceGatewayClientV1` trait by
@@ -32,29 +31,32 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         &self,
         ctx: SecurityContext,
         req: oagw_sdk::CreateUpstreamRequest,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         let internal_req = sdk_create_upstream_to_domain(req);
-        let result = self.cp.create_upstream(&ctx, internal_req).await;
-        result.map(upstream_to_sdk).map_err(domain_err_to_sdk)
+        self.cp
+            .create_upstream(&ctx, internal_req)
+            .await
+            .map(upstream_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn get_upstream(
         &self,
         ctx: SecurityContext,
         id: Uuid,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         self.cp
             .get_upstream(&ctx, id)
             .await
             .map(upstream_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn list_upstreams(
         &self,
         ctx: SecurityContext,
         query: &oagw_sdk::ListQuery,
-    ) -> Result<Vec<oagw_sdk::Upstream>, ServiceGatewayError> {
+    ) -> Result<Vec<oagw_sdk::Upstream>, CanonicalError> {
         let q = model::ListQuery {
             top: query.top,
             skip: query.skip,
@@ -63,7 +65,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .list_upstreams(&ctx, &q)
             .await
             .map(|v| v.into_iter().map(upstream_to_sdk).collect())
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn update_upstream(
@@ -71,50 +73,46 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         ctx: SecurityContext,
         id: Uuid,
         req: oagw_sdk::UpdateUpstreamRequest,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         let internal_req = sdk_update_upstream_to_domain(req);
         self.cp
             .update_upstream(&ctx, id, internal_req)
             .await
             .map(upstream_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
-    async fn delete_upstream(
-        &self,
-        ctx: SecurityContext,
-        id: Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    async fn delete_upstream(&self, ctx: SecurityContext, id: Uuid) -> Result<(), CanonicalError> {
         self.cp
             .delete_upstream(&ctx, id)
             .await
             .map(|_| ())
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn create_route(
         &self,
         ctx: SecurityContext,
         req: oagw_sdk::CreateRouteRequest,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         let internal_req = sdk_create_route_to_domain(req);
         self.cp
             .create_route(&ctx, internal_req)
             .await
             .map(route_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn get_route(
         &self,
         ctx: SecurityContext,
         id: Uuid,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         self.cp
             .get_route(&ctx, id)
             .await
             .map(route_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn list_routes(
@@ -122,7 +120,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         ctx: SecurityContext,
         upstream_id: Option<Uuid>,
         query: &oagw_sdk::ListQuery,
-    ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
+    ) -> Result<Vec<oagw_sdk::Route>, CanonicalError> {
         let q = model::ListQuery {
             top: query.top,
             skip: query.skip,
@@ -131,7 +129,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .list_routes(&ctx, upstream_id, &q)
             .await
             .map(|v| v.into_iter().map(route_to_sdk).collect())
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn update_route(
@@ -139,24 +137,20 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         ctx: SecurityContext,
         id: Uuid,
         req: oagw_sdk::UpdateRouteRequest,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         let internal_req = sdk_update_route_to_domain(req);
         self.cp
             .update_route(&ctx, id, internal_req)
             .await
             .map(route_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
-    async fn delete_route(
-        &self,
-        ctx: SecurityContext,
-        id: Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    async fn delete_route(&self, ctx: SecurityContext, id: Uuid) -> Result<(), CanonicalError> {
         self.cp
             .delete_route(&ctx, id)
             .await
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn resolve_proxy_target(
@@ -165,148 +159,35 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         alias: &str,
         method: &str,
         path: &str,
-    ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), ServiceGatewayError> {
+    ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), CanonicalError> {
         self.cp
             .resolve_proxy_target(&ctx, alias, method, path)
             .await
             .map(|(u, r)| (upstream_to_sdk(u), route_to_sdk(r)))
-            .map_err(domain_err_to_sdk)
+            .map_err(CanonicalError::from)
     }
 
     async fn proxy_request(
         &self,
         ctx: SecurityContext,
         req: http::Request<Body>,
-    ) -> Result<http::Response<Body>, ServiceGatewayError> {
+    ) -> Result<http::Response<Body>, CanonicalError> {
         self.dp
             .proxy_request(ctx, req)
             .await
-            .map_err(domain_err_to_sdk)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DomainError → ServiceGatewayError
-// ---------------------------------------------------------------------------
-
-fn domain_err_to_sdk(err: DomainError) -> ServiceGatewayError {
-    match err {
-        DomainError::NotFound { entity, id } => ServiceGatewayError::NotFound {
-            entity: entity.to_string(),
-            instance: format!("{entity}/{id}"),
-        },
-        DomainError::Conflict { detail, .. } => ServiceGatewayError::ValidationError {
-            detail,
-            instance: String::new(),
-        },
-        DomainError::Validation {
-            detail, instance, ..
-        } => ServiceGatewayError::ValidationError { detail, instance },
-        DomainError::UpstreamDisabled { alias } => ServiceGatewayError::UpstreamDisabled {
-            detail: format!("upstream '{alias}' is disabled"),
-            instance: String::new(),
-        },
-        DomainError::Internal { message } => ServiceGatewayError::DownstreamError {
-            detail: message,
-            instance: String::new(),
-        },
-        DomainError::MissingTargetHost { instance } => {
-            ServiceGatewayError::MissingTargetHost { instance }
-        }
-        DomainError::InvalidTargetHost { instance } => {
-            ServiceGatewayError::InvalidTargetHost { instance }
-        }
-        DomainError::UnknownTargetHost { detail, instance } => {
-            ServiceGatewayError::UnknownTargetHost { detail, instance }
-        }
-        DomainError::AuthenticationFailed {
-            reason,
-            detail,
-            instance,
-        } => ServiceGatewayError::AuthenticationFailed {
-            reason: reason.to_string(),
-            detail,
-            instance,
-        },
-        DomainError::PayloadTooLarge { detail, instance } => {
-            ServiceGatewayError::PayloadTooLarge { detail, instance }
-        }
-        DomainError::RateLimitExceeded {
-            detail,
-            instance,
-            retry_after_secs,
-            ..
-        } => ServiceGatewayError::RateLimitExceeded {
-            detail,
-            instance,
-            retry_after_secs,
-        },
-        DomainError::SecretNotFound { detail, instance } => {
-            ServiceGatewayError::SecretNotFound { detail, instance }
-        }
-        DomainError::DownstreamError { detail, instance } => {
-            ServiceGatewayError::DownstreamError { detail, instance }
-        }
-        DomainError::ProtocolError { detail, instance } => {
-            ServiceGatewayError::ProtocolError { detail, instance }
-        }
-        DomainError::ConnectionTimeout { detail, instance } => {
-            ServiceGatewayError::ConnectionTimeout { detail, instance }
-        }
-        DomainError::RequestTimeout { detail, instance } => {
-            ServiceGatewayError::RequestTimeout { detail, instance }
-        }
-        DomainError::GuardRejected {
-            status,
-            error_code,
-            detail,
-            instance,
-            resource_id,
-        } => ServiceGatewayError::GuardRejected {
-            status,
-            error_code,
-            detail,
-            instance,
-            resource_id,
-        },
-        DomainError::CorsOriginNotAllowed {
-            origin, instance, ..
-        } => ServiceGatewayError::Forbidden {
-            reason: "CORS_ORIGIN_NOT_ALLOWED".into(),
-            detail: format!("CORS origin not allowed: {origin} (instance: {instance})"),
-        },
-        DomainError::CorsMethodNotAllowed {
-            method, instance, ..
-        } => ServiceGatewayError::Forbidden {
-            reason: "CORS_METHOD_NOT_ALLOWED".into(),
-            detail: format!("CORS method not allowed: {method} (instance: {instance})"),
-        },
-        DomainError::StreamAborted { detail, instance } => {
-            ServiceGatewayError::StreamAborted { detail, instance }
-        }
-        DomainError::LinkUnavailable { detail, instance } => {
-            ServiceGatewayError::LinkUnavailable { detail, instance }
-        }
-        DomainError::CircuitBreakerOpen { detail, instance } => {
-            ServiceGatewayError::CircuitBreakerOpen { detail, instance }
-        }
-        DomainError::IdleTimeout { detail, instance } => {
-            ServiceGatewayError::IdleTimeout { detail, instance }
-        }
-        DomainError::PluginNotFound { gts_id, detail } => {
-            ServiceGatewayError::PluginNotFound { gts_id, detail }
-        }
-        DomainError::PluginInUse { gts_id, detail } => {
-            ServiceGatewayError::PluginInUse { gts_id, detail }
-        }
-        DomainError::Forbidden { reason, detail } => {
-            ServiceGatewayError::Forbidden { reason, detail }
-        }
+            .map_err(CanonicalError::from)
     }
 }
 
 // ---------------------------------------------------------------------------
 // SDK request → domain request conversions (using SDK getters for private fields)
+//
+// Domain errors are converted into the canonical `CanonicalError` by the impl
+// crate's own `From<DomainError> for CanonicalError` in
+// `crate::api::rest::error` — that is the **single** AIP-193 mapping. SDK
+// consumers project the canonical error into the typed
+// `ServiceGatewayError` view at the call site via
+// `.map_err(ServiceGatewayError::from)`. See ADR 0005.
 // ---------------------------------------------------------------------------
 
 fn sdk_create_upstream_to_domain(
@@ -779,6 +660,7 @@ fn rate_limit_config_to_sdk(v: model::RateLimitConfig) -> oagw_sdk::RateLimitCon
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::error::DomainError;
     use std::collections::HashMap;
 
     #[test]
@@ -849,36 +731,30 @@ mod tests {
     }
 
     #[test]
-    fn domain_err_not_found_maps_to_sdk() {
-        let err = DomainError::NotFound {
+    fn domain_not_found_maps_to_canonical_not_found_with_resource_scope() {
+        // The impl crate emits CanonicalError directly. Verify the
+        // resource_type is set to the upstream GTS scope so SDK
+        // consumers can dispatch on it by matching against
+        // oagw_sdk::gts::UPSTREAM_SCHEMA.
+        let domain_err = DomainError::NotFound {
             entity: "upstream",
             id: Uuid::nil(),
         };
-        let sdk_err = domain_err_to_sdk(err);
-        assert!(matches!(
-            sdk_err,
-            ServiceGatewayError::NotFound { ref entity, .. } if entity == "upstream"
-        ));
+        let canonical: CanonicalError = domain_err.into();
+        assert!(matches!(canonical, CanonicalError::NotFound { .. }));
+        assert_eq!(
+            canonical.resource_type(),
+            Some(oagw_sdk::gts::UPSTREAM_SCHEMA),
+        );
     }
 
     #[test]
-    fn domain_err_validation_maps_to_sdk() {
-        let err = DomainError::Validation {
-            field: "",
-            reason: "VALIDATION",
-            detail: "bad input".into(),
-            instance: "/test".into(),
-        };
-        let sdk_err = domain_err_to_sdk(err);
-        assert!(matches!(
-            sdk_err,
-            ServiceGatewayError::ValidationError { .. }
-        ));
-    }
-
-    #[test]
-    fn domain_err_rate_limit_maps_to_sdk() {
-        let err = DomainError::RateLimitExceeded {
+    fn domain_rate_limit_maps_to_canonical_resource_exhausted() {
+        // Note: the canonical ResourceExhausted context type doesn't carry
+        // retry_after_seconds today — the retry hint only lands in the
+        // HTTP Retry-After header. In-process callers see it via the wire
+        // headers; canonical-body callers do not.
+        let domain_err = DomainError::RateLimitExceeded {
             detail: "too fast".into(),
             instance: "/api".into(),
             retry_after_secs: Some(30),
@@ -886,26 +762,21 @@ mod tests {
             remaining: None,
             reset_epoch: None,
         };
-        let sdk_err = domain_err_to_sdk(err);
-        match sdk_err {
-            ServiceGatewayError::RateLimitExceeded {
-                retry_after_secs, ..
-            } => assert_eq!(retry_after_secs, Some(30)),
-            _ => panic!("expected RateLimitExceeded"),
-        }
+        let canonical: CanonicalError = domain_err.into();
+        assert!(matches!(
+            canonical,
+            CanonicalError::ResourceExhausted { .. }
+        ));
     }
 
     #[test]
-    fn domain_err_timeout_maps_to_sdk() {
-        let err = DomainError::RequestTimeout {
+    fn domain_timeout_maps_to_canonical_deadline_exceeded() {
+        let domain_err = DomainError::RequestTimeout {
             detail: "timed out".into(),
             instance: "/slow".into(),
         };
-        let sdk_err = domain_err_to_sdk(err);
-        assert!(matches!(
-            sdk_err,
-            ServiceGatewayError::RequestTimeout { .. }
-        ));
+        let canonical: CanonicalError = domain_err.into();
+        assert!(matches!(canonical, CanonicalError::DeadlineExceeded { .. }));
     }
 
     #[test]

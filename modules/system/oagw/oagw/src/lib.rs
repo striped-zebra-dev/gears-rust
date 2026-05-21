@@ -1,7 +1,7 @@
 // === PUBLIC API (from SDK) ===
 pub use oagw_sdk::{
-    CreateRouteRequest, CreateUpstreamRequest, Endpoint, Route, UpdateRouteRequest,
-    UpdateUpstreamRequest, Upstream, api::ServiceGatewayClientV1, error::ServiceGatewayError,
+    CreateRouteRequest, CreateUpstreamRequest, Endpoint, Route, ServiceGatewayError,
+    UpdateRouteRequest, UpdateUpstreamRequest, Upstream, api::ServiceGatewayClientV1,
 };
 
 // === MODULE DEFINITION ===

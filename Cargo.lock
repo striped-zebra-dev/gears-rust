@@ -2408,6 +2408,7 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tracing",
  "trybuild",
  "utoipa",
@@ -2796,6 +2797,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "cyberware-modkit-canonical-errors",
  "cyberware-modkit-security",
  "futures-core",
  "futures-util",
@@ -2992,9 +2994,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "cyberware-modkit",
+ "cyberware-modkit-canonical-errors",
  "cyberware-modkit-macros",
  "cyberware-modkit-security",
- "thiserror 2.0.18",
  "time",
  "uuid",
 ]

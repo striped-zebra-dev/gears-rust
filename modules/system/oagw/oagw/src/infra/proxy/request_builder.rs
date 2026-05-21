@@ -1,5 +1,6 @@
 use crate::domain::error::DomainError;
 use crate::domain::model::{Endpoint, Scheme};
+use oagw_sdk::field;
 
 /// Build the full upstream URL from endpoint, route path, path suffix, and query params.
 ///
@@ -20,7 +21,7 @@ pub fn build_upstream_url(
         Scheme::Grpc => {
             return Err(DomainError::Validation {
                 field: "endpoint.scheme",
-                reason: "UNSUPPORTED_SCHEME",
+                reason: field::UNSUPPORTED_SCHEME,
                 detail: "gRPC scheme is not supported for HTTP proxy".into(),
                 instance: String::new(),
             });

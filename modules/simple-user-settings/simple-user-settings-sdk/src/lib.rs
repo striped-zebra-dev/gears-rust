@@ -3,7 +3,13 @@
 //! This crate provides the public API for the settings module:
 //! - `SimpleUserSettingsClientV1` trait for inter-module communication
 //! - Model types (`SimpleUserSettings`, `SimpleUserSettingsPatch`)
-//! - Error type (`SettingsError`)
+//!
+//! Trait methods return `Result<_, CanonicalError>` — this SDK is the
+//! Pattern 1 reference for ADR 0005 (canonical-at-boundary with no
+//! typed projection). Its consumer dispatch needs do not warrant the
+//! extra projection layer that oagw-sdk ships; callers either
+//! propagate `CanonicalError` directly or `match` on the canonical
+//! categories themselves.
 //!
 //! Consumers obtain the client from `ClientHub`:
 //! ```ignore
@@ -14,9 +20,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
-pub mod errors;
 pub mod models;
 
 pub use api::SimpleUserSettingsClientV1;
-pub use errors::SettingsError;
 pub use models::{SimpleUserSettings, SimpleUserSettingsPatch, SimpleUserSettingsUpdate};

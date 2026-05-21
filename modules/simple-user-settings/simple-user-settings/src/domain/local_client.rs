@@ -1,8 +1,9 @@
 use async_trait::async_trait;
+use modkit_canonical_errors::CanonicalError;
 use modkit_macros::domain_model;
 use modkit_security::SecurityContext;
 use simple_user_settings_sdk::{
-    SettingsError, SimpleUserSettings, SimpleUserSettingsClientV1, SimpleUserSettingsPatch,
+    SimpleUserSettings, SimpleUserSettingsClientV1, SimpleUserSettingsPatch,
     SimpleUserSettingsUpdate,
 };
 use std::sync::Arc;
@@ -27,29 +28,32 @@ impl<R: SettingsRepository + 'static> SimpleUserSettingsClientV1 for LocalClient
     async fn get_settings(
         &self,
         ctx: &SecurityContext,
-    ) -> Result<SimpleUserSettings, SettingsError> {
-        self.service.get_settings(ctx).await.map_err(Into::into)
+    ) -> Result<SimpleUserSettings, CanonicalError> {
+        self.service
+            .get_settings(ctx)
+            .await
+            .map_err(CanonicalError::from)
     }
 
     async fn update_settings(
         &self,
         ctx: &SecurityContext,
         update: SimpleUserSettingsUpdate,
-    ) -> Result<SimpleUserSettings, SettingsError> {
+    ) -> Result<SimpleUserSettings, CanonicalError> {
         self.service
             .update_settings(ctx, update)
             .await
-            .map_err(Into::into)
+            .map_err(CanonicalError::from)
     }
 
     async fn patch_settings(
         &self,
         ctx: &SecurityContext,
         patch: SimpleUserSettingsPatch,
-    ) -> Result<SimpleUserSettings, SettingsError> {
+    ) -> Result<SimpleUserSettings, CanonicalError> {
         self.service
             .patch_settings(ctx, patch)
             .await
-            .map_err(Into::into)
+            .map_err(CanonicalError::from)
     }
 }

@@ -555,6 +555,22 @@ impl<Resource> ResourceErrorBuilder<Resource, HasQuotaViolations> {
             .push(QuotaViolation::new(subject, description));
         self
     }
+
+    /// Attach a retry hint to the most-recently-pushed quota violation.
+    /// Use for rate-limit-style violations where the upstream knows when
+    /// capacity returns; omit for hard exhaustion (memory, non-replenishing
+    /// quota) where there is no useful retry window.
+    ///
+    /// Silently noop if the violation list is empty — the typestate
+    /// already guarantees at least one violation is present on
+    /// `HasQuotaViolations`, so this branch is unreachable in normal use.
+    #[must_use]
+    pub fn with_quota_violation_retry_after_seconds(mut self, seconds: u64) -> Self {
+        if let Some(last) = self.context.0.last_mut() {
+            last.retry_after_seconds = Some(seconds);
+        }
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------

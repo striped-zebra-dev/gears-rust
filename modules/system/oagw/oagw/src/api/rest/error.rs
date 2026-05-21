@@ -44,6 +44,7 @@ use modkit_canonical_errors::{CanonicalError, Problem, resource_error};
 use crate::domain::error::DomainError;
 use crate::domain::gts_helpers as gts;
 use oagw_sdk::api::ErrorSource;
+use oagw_sdk::{field, quota, reason};
 
 // ---------------------------------------------------------------------------
 // Retry-after defaults for `service_unavailable` emissions
@@ -170,7 +171,7 @@ impl From<DomainError> for CanonicalError {
                 .with_field_violation(
                     "x-target-host",
                     "target host header required for multi-endpoint upstream",
-                    "MISSING_TARGET_HOST",
+                    field::MISSING_TARGET_HOST,
                 )
                 .create(),
 
@@ -178,12 +179,12 @@ impl From<DomainError> for CanonicalError {
                 .with_field_violation(
                     "x-target-host",
                     "invalid target host header format",
-                    "INVALID_TARGET_HOST",
+                    field::INVALID_TARGET_HOST,
                 )
                 .create(),
 
             DomainError::UnknownTargetHost { detail, .. } => OagwProxyError::invalid_argument()
-                .with_field_violation("x-target-host", detail, "UNKNOWN_TARGET_HOST")
+                .with_field_violation("x-target-host", detail, field::UNKNOWN_TARGET_HOST)
                 .create(),
 
             DomainError::AuthenticationFailed { reason, detail, .. } => {
@@ -210,13 +211,13 @@ impl From<DomainError> for CanonicalError {
 
             DomainError::PayloadTooLarge { detail, .. } => {
                 OagwProxyError::out_of_range(detail.clone())
-                    .with_field_violation("body", detail, "PAYLOAD_TOO_LARGE")
+                    .with_field_violation("body", detail, field::PAYLOAD_TOO_LARGE)
                     .create()
             }
 
             DomainError::RateLimitExceeded { detail, .. } => {
                 OagwProxyError::resource_exhausted(detail.clone())
-                    .with_quota_violation("rate_limit", detail)
+                    .with_quota_violation(quota::RATE_LIMIT, detail)
                     .create()
             }
 
@@ -275,14 +276,14 @@ impl From<DomainError> for CanonicalError {
             DomainError::CorsOriginNotAllowed { origin, .. } => {
                 tracing::debug!(origin = %origin, "OAGW CORS origin rejected");
                 OagwProxyError::permission_denied()
-                    .with_reason("CORS_ORIGIN_NOT_ALLOWED")
+                    .with_reason(reason::permission::CORS_ORIGIN_NOT_ALLOWED)
                     .create()
             }
 
             DomainError::CorsMethodNotAllowed { method, .. } => {
                 tracing::debug!(method = %method, "OAGW CORS method rejected");
                 OagwProxyError::permission_denied()
-                    .with_reason("CORS_METHOD_NOT_ALLOWED")
+                    .with_reason(reason::permission::CORS_METHOD_NOT_ALLOWED)
                     .create()
             }
 
@@ -566,7 +567,7 @@ mod tests {
     fn validation_with_field_emits_field_violation() {
         let err = DomainError::Validation {
             field: "server",
-            reason: "REQUIRED",
+            reason: field::REQUIRED,
             detail: "missing required field 'server'".into(),
             instance: "/oagw/v1/upstreams".into(),
         };
@@ -589,7 +590,7 @@ mod tests {
             .expect("field_violations must be present");
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0]["field"], "server");
-        assert_eq!(violations[0]["reason"], "REQUIRED");
+        assert_eq!(violations[0]["reason"], field::REQUIRED);
         assert!(
             violations[0]["description"]
                 .as_str()
@@ -816,7 +817,7 @@ mod tests {
         let errors: Vec<DomainError> = vec![
             DomainError::Validation {
                 field: "",
-                reason: "VALIDATION",
+                reason: field::VALIDATION,
                 detail: "test".into(),
                 instance: "/test".into(),
             },
@@ -836,7 +837,7 @@ mod tests {
                 instance: "/test".into(),
             },
             DomainError::AuthenticationFailed {
-                reason: "AUTH_PLUGIN_FAILED",
+                reason: reason::auth::PLUGIN_FAILED,
                 detail: "test".into(),
                 instance: "/test".into(),
             },
@@ -922,7 +923,7 @@ mod tests {
                 detail: "test".into(),
             },
             DomainError::Forbidden {
-                reason: "AUTHZ_DENIED".into(),
+                reason: reason::permission::AUTHZ_DENIED.into(),
                 detail: "test".into(),
             },
         ];
@@ -955,7 +956,7 @@ mod tests {
         // ignored when the handler plumbs the request URI through.
         let err = DomainError::Validation {
             field: "",
-            reason: "VALIDATION",
+            reason: field::VALIDATION,
             detail: "bad input".into(),
             instance: "/oagw/v1/upstreams".into(),
         };
@@ -1102,13 +1103,13 @@ mod tests {
         // m1: AUTH_PLUGIN_NOT_FOUND / _FAILED / _INTERNAL must reach the
         // wire context so clients can branch programmatically rather than
         // parsing the human-readable detail.
-        for reason in [
-            "AUTH_PLUGIN_NOT_FOUND",
-            "AUTH_PLUGIN_FAILED",
-            "AUTH_PLUGIN_INTERNAL",
+        for auth_reason in [
+            reason::auth::PLUGIN_NOT_FOUND,
+            reason::auth::PLUGIN_FAILED,
+            reason::auth::PLUGIN_INTERNAL,
         ] {
             let err = DomainError::AuthenticationFailed {
-                reason,
+                reason: auth_reason,
                 detail: "plugin failed".into(),
                 instance: "/test".into(),
             };
@@ -1118,7 +1119,10 @@ mod tests {
                 p.problem_type,
                 "gts://gts.cf.core.errors.err.v1~cf.core.err.unauthenticated.v1~"
             );
-            assert_eq!(p.context["reason"], reason, "reason must reach the wire");
+            assert_eq!(
+                p.context["reason"], auth_reason,
+                "reason must reach the wire",
+            );
         }
     }
 
@@ -1128,12 +1132,15 @@ mod tests {
         // it lands on the wire as `permission_denied.reason` — the structured
         // PEP code is no longer collapsed into the prose detail.
         let err = DomainError::forbidden_with_reason(
-            "TENANT_BOUNDARY_VIOLATION",
+            reason::permission::TENANT_BOUNDARY_VIOLATION,
             "subject not allowed to act outside its tenant",
         );
         let p: Problem = err.into_test_problem();
         assert_eq!(p.status, 403);
-        assert_eq!(p.context["reason"], "TENANT_BOUNDARY_VIOLATION");
+        assert_eq!(
+            p.context["reason"],
+            reason::permission::TENANT_BOUNDARY_VIOLATION
+        );
     }
 
     #[test]
@@ -1143,7 +1150,7 @@ mod tests {
         // `AUTHZ_DENIED` taxonomy member.
         let err = DomainError::forbidden("policy denied");
         let p: Problem = err.into_test_problem();
-        assert_eq!(p.context["reason"], "AUTHZ_DENIED");
+        assert_eq!(p.context["reason"], reason::permission::AUTHZ_DENIED);
     }
 
     #[test]

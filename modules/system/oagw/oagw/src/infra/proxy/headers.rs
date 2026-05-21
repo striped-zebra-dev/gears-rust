@@ -4,6 +4,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::{PassthroughMode, RequestHeaderRules, ResponseHeaderRules};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use oagw_sdk::api::ErrorSource;
+use oagw_sdk::field;
 
 use super::HOP_BY_HOP_HEADERS;
 
@@ -252,7 +253,7 @@ pub fn validate_content_type(headers: &HeaderMap) -> Result<(), DomainError> {
     if iter.next().is_some() {
         return Err(DomainError::validation_for(
             "content-type",
-            "DUPLICATE_HEADER",
+            field::DUPLICATE_HEADER,
             "duplicate Content-Type headers",
         ));
     }
@@ -263,7 +264,7 @@ pub fn validate_content_type(headers: &HeaderMap) -> Result<(), DomainError> {
         .ok_or_else(|| {
             DomainError::validation_for(
                 "content-type",
-                "INVALID_MIME_TYPE",
+                field::INVALID_MIME_TYPE,
                 "Content-Type header is not a recognized MIME type",
             )
         })
@@ -277,21 +278,21 @@ pub fn validate_smuggling_headers(headers: &HeaderMap) -> Result<(), DomainError
         if cl_iter.next().is_some() {
             return Err(DomainError::validation_for(
                 "content-length",
-                "DUPLICATE_HEADER",
+                field::DUPLICATE_HEADER,
                 "duplicate Content-Length headers",
             ));
         }
         let Ok(s) = val.to_str() else {
             return Err(DomainError::validation_for(
                 "content-length",
-                "INVALID_VALUE",
+                field::INVALID_VALUE,
                 "Content-Length is not a valid integer",
             ));
         };
         if s.trim().parse::<u64>().is_err() {
             return Err(DomainError::validation_for(
                 "content-length",
-                "INVALID_VALUE",
+                field::INVALID_VALUE,
                 "Content-Length is not a valid integer",
             ));
         }
@@ -305,7 +306,7 @@ pub fn validate_smuggling_headers(headers: &HeaderMap) -> Result<(), DomainError
         if te_iter.next().is_some() {
             return Err(DomainError::validation_for(
                 "transfer-encoding",
-                "DUPLICATE_HEADER",
+                field::DUPLICATE_HEADER,
                 "duplicate Transfer-Encoding headers",
             ));
         }

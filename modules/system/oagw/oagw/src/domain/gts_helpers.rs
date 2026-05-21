@@ -4,16 +4,21 @@
 //! resource GTS identifiers of the form `gts.cf.core.oagw.<type>.v1~<uuid>`.
 
 use crate::domain::error::DomainError;
+use oagw_sdk::field;
 use uuid::Uuid;
 
 // -- Schema GTS identifiers --
-pub const UPSTREAM_SCHEMA: &str = "gts.cf.core.oagw.upstream.v1~";
-pub const ROUTE_SCHEMA: &str = "gts.cf.core.oagw.route.v1~";
+//
+// The error-bearing scopes are re-exported from `oagw-sdk` so the SDK and
+// impl crate share a single source of truth for the wire `resource_type`
+// strings. `PROTOCOL_SCHEMA` stays local because it identifies a config
+// type, not an error scope, and never appears in the SDK error surface.
+pub use oagw_sdk::gts::{
+    AUTH_PLUGIN_SCHEMA, GUARD_PLUGIN_SCHEMA, PROXY_SCHEMA, ROUTE_SCHEMA, TRANSFORM_PLUGIN_SCHEMA,
+    UPSTREAM_SCHEMA,
+};
+
 pub const PROTOCOL_SCHEMA: &str = "gts.cf.core.oagw.protocol.v1~";
-pub const AUTH_PLUGIN_SCHEMA: &str = "gts.cf.core.oagw.auth_plugin.v1~";
-pub const GUARD_PLUGIN_SCHEMA: &str = "gts.cf.core.oagw.guard_plugin.v1~";
-pub const TRANSFORM_PLUGIN_SCHEMA: &str = "gts.cf.core.oagw.transform_plugin.v1~";
-pub const PROXY_SCHEMA: &str = "gts.cf.core.oagw.proxy.v1~";
 
 // -- Builtin protocol instances --
 pub const HTTP_PROTOCOL_ID: &str = "gts.cf.core.oagw.protocol.v1~cf.core.oagw.http.v1";
@@ -65,14 +70,14 @@ pub fn parse_resource_gts(s: &str) -> Result<(String, Uuid), DomainError> {
     // Validate the full GTS identifier (anonymous UUID segments supported since 0.8.4).
     gts::GtsID::new(s).map_err(|e| DomainError::Validation {
         field: "gts_id",
-        reason: "INVALID_GTS_FORMAT",
+        reason: field::INVALID_GTS_FORMAT,
         detail: format!("invalid GTS identifier: {e}"),
         instance: s.to_string(),
     })?;
 
     let tilde_pos = s.rfind('~').ok_or_else(|| DomainError::Validation {
         field: "gts_id",
-        reason: "MISSING_GTS_TILDE",
+        reason: field::MISSING_GTS_TILDE,
         detail: "missing '~' separator in GTS identifier".into(),
         instance: s.to_string(),
     })?;
@@ -80,7 +85,7 @@ pub fn parse_resource_gts(s: &str) -> Result<(String, Uuid), DomainError> {
     let instance = &s[tilde_pos + 1..];
     let uuid = Uuid::parse_str(instance).map_err(|e| DomainError::Validation {
         field: "gts_id",
-        reason: "INVALID_GTS_UUID",
+        reason: field::INVALID_GTS_UUID,
         detail: format!("invalid UUID in GTS instance: {e}"),
         instance: s.to_string(),
     })?;

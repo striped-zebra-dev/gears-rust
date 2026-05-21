@@ -1,6 +1,5 @@
 use modkit_db::DbError;
 use modkit_macros::domain_model;
-use simple_user_settings_sdk::errors::SettingsError;
 
 #[domain_model]
 #[derive(Debug, thiserror::Error)]
@@ -49,17 +48,6 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             authz_resolver_sdk::EnforcerError::Denied { .. }
             | authz_resolver_sdk::EnforcerError::CompileFailed(_) => Self::Forbidden(e.to_string()),
             authz_resolver_sdk::EnforcerError::EvaluationFailed(_) => Self::Internal(e.to_string()),
-        }
-    }
-}
-
-impl From<DomainError> for SettingsError {
-    fn from(e: DomainError) -> Self {
-        match e {
-            DomainError::NotFound => Self::not_found(),
-            DomainError::Validation { field, message } => Self::validation(field, message),
-            DomainError::Forbidden(_) => Self::forbidden(),
-            DomainError::Internal(_) | DomainError::Database(_) => Self::internal(),
         }
     }
 }

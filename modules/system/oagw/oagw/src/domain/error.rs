@@ -1,4 +1,5 @@
 use modkit_macros::domain_model;
+use oagw_sdk::{field, reason};
 use uuid::Uuid;
 
 use super::repo::RepositoryError;
@@ -168,7 +169,7 @@ impl DomainError {
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::Validation {
             field: "",
-            reason: "VALIDATION",
+            reason: field::VALIDATION,
             detail: detail.into(),
             instance: String::new(),
         }
@@ -212,7 +213,7 @@ impl DomainError {
     #[must_use]
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::Forbidden {
-            reason: "AUTHZ_DENIED".into(),
+            reason: reason::permission::AUTHZ_DENIED.into(),
             detail: detail.into(),
         }
     }
@@ -267,7 +268,7 @@ impl From<tenant_resolver_sdk::TenantResolverError> for DomainError {
                 }
             }
             TenantResolverError::Unauthorized => Self::Forbidden {
-                reason: "TENANT_RESOLVER_UNAUTHORIZED".into(),
+                reason: reason::permission::TENANT_RESOLVER_UNAUTHORIZED.into(),
                 detail: "tenant resolver: unauthorized".to_string(),
             },
             TenantResolverError::NoPluginAvailable => Self::Internal {
@@ -302,7 +303,7 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
                         .unwrap_or_else(|| "access denied by policy".into()),
                 },
                 None => Self::Forbidden {
-                    reason: "AUTHZ_DENIED".into(),
+                    reason: reason::permission::AUTHZ_DENIED.into(),
                     detail: "access denied by policy".into(),
                 },
             },

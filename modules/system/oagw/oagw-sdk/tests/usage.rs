@@ -15,11 +15,11 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 use oagw_sdk::api::ServiceGatewayClientV1;
 use oagw_sdk::body::{Body, BodyStream, BoxError};
 use oagw_sdk::codec::Json;
-use oagw_sdk::error::ServiceGatewayError;
 use oagw_sdk::error::StreamingError;
 use oagw_sdk::sse::{FromServerEvent, ServerEvent, ServerEventsResponse, ServerEventsStream};
 use oagw_sdk::ws::{
@@ -69,7 +69,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: oagw_sdk::CreateUpstreamRequest,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         unimplemented!()
     }
 
@@ -77,7 +77,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         unimplemented!()
     }
 
@@ -85,7 +85,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: &oagw_sdk::ListQuery,
-    ) -> Result<Vec<oagw_sdk::Upstream>, ServiceGatewayError> {
+    ) -> Result<Vec<oagw_sdk::Upstream>, CanonicalError> {
         unimplemented!()
     }
 
@@ -94,7 +94,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: uuid::Uuid,
         _: oagw_sdk::UpdateUpstreamRequest,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         unimplemented!()
     }
 
@@ -102,7 +102,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    ) -> Result<(), CanonicalError> {
         unimplemented!()
     }
 
@@ -110,7 +110,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: oagw_sdk::CreateRouteRequest,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         unimplemented!()
     }
 
@@ -118,7 +118,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         unimplemented!()
     }
 
@@ -127,7 +127,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: Option<uuid::Uuid>,
         _: &oagw_sdk::ListQuery,
-    ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
+    ) -> Result<Vec<oagw_sdk::Route>, CanonicalError> {
         unimplemented!()
     }
 
@@ -136,15 +136,11 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: uuid::Uuid,
         _: oagw_sdk::UpdateRouteRequest,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         unimplemented!()
     }
 
-    async fn delete_route(
-        &self,
-        _: SecurityContext,
-        _: uuid::Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    async fn delete_route(&self, _: SecurityContext, _: uuid::Uuid) -> Result<(), CanonicalError> {
         unimplemented!()
     }
 
@@ -154,7 +150,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: &str,
         _: &str,
         _: &str,
-    ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), ServiceGatewayError> {
+    ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), CanonicalError> {
         unimplemented!()
     }
 
@@ -162,7 +158,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _ctx: SecurityContext,
         _req: http::Request<Body>,
-    ) -> Result<http::Response<Body>, ServiceGatewayError> {
+    ) -> Result<http::Response<Body>, CanonicalError> {
         Ok(self
             .response
             .lock()

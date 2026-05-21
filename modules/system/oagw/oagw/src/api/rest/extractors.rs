@@ -1,4 +1,5 @@
 use modkit_canonical_errors::Problem;
+use oagw_sdk::field;
 use uuid::Uuid;
 
 use crate::api::rest::error::domain_error_to_problem;
@@ -18,7 +19,7 @@ pub fn parse_gts_id(gts_str: &str, expected_schema: &str, instance: &str) -> Res
     if schema != expected_prefix {
         let err = DomainError::Validation {
             field: "gts_id",
-            reason: "INVALID_GTS_SCHEMA",
+            reason: field::INVALID_GTS_SCHEMA,
             detail: format!("expected GTS schema '{expected_schema}' but got '{schema}~'"),
             instance: instance.to_string(),
         };

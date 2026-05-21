@@ -244,21 +244,21 @@ mod tests {
             &self,
             _: SecurityContext,
             _: oagw_sdk::CreateUpstreamRequest,
-        ) -> Result<oagw_sdk::Upstream, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Upstream, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn get_upstream(
             &self,
             _: SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<oagw_sdk::Upstream, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Upstream, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn list_upstreams(
             &self,
             _: SecurityContext,
             _: &oagw_sdk::ListQuery,
-        ) -> Result<Vec<oagw_sdk::Upstream>, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<Vec<oagw_sdk::Upstream>, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn update_upstream(
@@ -266,28 +266,28 @@ mod tests {
             _: SecurityContext,
             _: uuid::Uuid,
             _: oagw_sdk::UpdateUpstreamRequest,
-        ) -> Result<oagw_sdk::Upstream, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Upstream, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn delete_upstream(
             &self,
             _: SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<(), oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<(), modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn create_route(
             &self,
             _: SecurityContext,
             _: oagw_sdk::CreateRouteRequest,
-        ) -> Result<oagw_sdk::Route, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Route, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn get_route(
             &self,
             _: SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<oagw_sdk::Route, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Route, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn list_routes(
@@ -295,7 +295,7 @@ mod tests {
             _: SecurityContext,
             _: Option<uuid::Uuid>,
             _: &oagw_sdk::ListQuery,
-        ) -> Result<Vec<oagw_sdk::Route>, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<Vec<oagw_sdk::Route>, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn update_route(
@@ -303,14 +303,14 @@ mod tests {
             _: SecurityContext,
             _: uuid::Uuid,
             _: oagw_sdk::UpdateRouteRequest,
-        ) -> Result<oagw_sdk::Route, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Route, modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn delete_route(
             &self,
             _: SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<(), oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<(), modkit_canonical_errors::CanonicalError> {
             unimplemented!()
         }
         async fn resolve_proxy_target(
@@ -319,7 +319,7 @@ mod tests {
             _: &str,
             _: &str,
             _: &str,
-        ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), oagw_sdk::error::ServiceGatewayError>
+        ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), modkit_canonical_errors::CanonicalError>
         {
             unimplemented!()
         }
@@ -327,7 +327,7 @@ mod tests {
             &self,
             _: SecurityContext,
             _: http::Request<Body>,
-        ) -> Result<http::Response<Body>, oagw_sdk::error::ServiceGatewayError> {
+        ) -> Result<http::Response<Body>, modkit_canonical_errors::CanonicalError> {
             Ok(http::Response::builder()
                 .status(self.status)
                 .body(Body::Bytes(Bytes::from(self.body.clone())))

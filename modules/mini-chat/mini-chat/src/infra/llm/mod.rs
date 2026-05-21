@@ -24,8 +24,10 @@ use std::task::{Context, Poll};
 
 use futures::Stream;
 use futures::StreamExt;
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 use oagw_sdk::error::{ServiceGatewayError, StreamingError};
+use oagw_sdk::reason::auth::FailureReason as AuthFailureReason;
 use regex::Regex;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -142,18 +144,42 @@ pub(crate) fn sanitize_provider_message(msg: &str) -> String {
 // `String`, so stringifying the gateway error is the intended fallback for the
 // catch-all arm. If the variant gains a structured source, wire it up and drop
 // this allow.
+//
+// Mapping table — ServiceGatewayError variant → LlmProviderError:
+//
+// | ServiceGatewayError variant                           | LlmProviderError         | Notes |
+// |-------------------------------------------------------|--------------------------|-------|
+// | `RateLimited`                                         | `RateLimited`            | `retry_after_secs` forwarded from the canonical `QuotaViolation.retry_after_seconds` (may be `None`) |
+// | `Timeout`                                             | `Timeout`                | connect / request / idle timeouts collapse here |
+// | `Unavailable`                                         | `ProviderUnavailable`    | upstream-disabled / transport / circuit-breaker — all retryable gateway-side |
+// | `AuthFailed { reason: PluginInternal }`               | `ProviderUnavailable`    | gateway-side auth machinery broken; user creds are not at fault |
+// | _ (everything else)                                   | `ProviderError`          | sanitized detail; raw kept for internal logging |
+//
+// The pre-canonical split between `UpstreamDisabled` → ProviderUnavailable and
+// `DownstreamError` → ProviderError is collapsed: both upstream-disabled and
+// downstream-transport failures land on canonical `service_unavailable` and
+// are indistinguishable to consumers. ProviderUnavailable is the right
+// disposition because both are *retryable* gateway-side failures.
 #[allow(unknown_lints, de1302_error_from_to_string)]
 impl From<ServiceGatewayError> for LlmProviderError {
     fn from(err: ServiceGatewayError) -> Self {
         match err {
-            ServiceGatewayError::RateLimitExceeded {
-                retry_after_secs, ..
-            } => LlmProviderError::RateLimited { retry_after_secs },
+            ServiceGatewayError::RateLimited { retry_after_secs } => {
+                LlmProviderError::RateLimited { retry_after_secs }
+            }
 
-            ServiceGatewayError::ConnectionTimeout { .. }
-            | ServiceGatewayError::RequestTimeout { .. } => LlmProviderError::Timeout,
+            ServiceGatewayError::Timeout => LlmProviderError::Timeout,
 
-            ServiceGatewayError::UpstreamDisabled { .. } => LlmProviderError::ProviderUnavailable,
+            // Both upstream-unavailable and gateway-side auth machinery
+            // failures (plugin panic, transport) surface as transient
+            // provider-unavailability — retry is reasonable. AuthFailed
+            // with `PluginInternal` specifically is not a user-credential
+            // failure; it's broken gateway plumbing.
+            ServiceGatewayError::Unavailable { .. }
+            | ServiceGatewayError::AuthFailed {
+                reason: AuthFailureReason::PluginInternal,
+                ..
+            } => LlmProviderError::ProviderUnavailable,
 
             other => {
                 let raw = other.to_string();
@@ -165,6 +191,16 @@ impl From<ServiceGatewayError> for LlmProviderError {
                 }
             }
         }
+    }
+}
+
+/// Chain `?`-propagation from OAGW calls (which return `CanonicalError`)
+/// into [`LlmProviderError`] via the SDK's typed projection. Call sites
+/// stay clean — no `.map_err(ServiceGatewayError::from)` boilerplate
+/// when the consumer already wants the typed disposition.
+impl From<CanonicalError> for LlmProviderError {
+    fn from(err: CanonicalError) -> Self {
+        ServiceGatewayError::from(err).into()
     }
 }
 

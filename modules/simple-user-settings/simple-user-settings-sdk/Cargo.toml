@@ -19,10 +19,10 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-thiserror = { workspace = true }
 uuid = { workspace = true }
 time = { workspace = true }
 
 modkit = { workspace = true }
+modkit-canonical-errors = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-security = { workspace = true }

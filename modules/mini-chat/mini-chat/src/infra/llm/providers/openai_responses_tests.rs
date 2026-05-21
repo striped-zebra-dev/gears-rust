@@ -8,7 +8,7 @@ use crate::infra::llm::{LlmMessage, LlmProvider, LlmTool, llm_request};
 use std::sync::Mutex;
 
 use futures::StreamExt;
-use oagw_sdk::error::ServiceGatewayError;
+use modkit_canonical_errors::{CanonicalError, resource_error};
 use oagw_sdk::models::*;
 
 // ── MockGateway ───────────────────────────────────────────────────────
@@ -19,8 +19,8 @@ enum MockResponse {
     Sse(Vec<String>),
     /// Return a JSON body (non-SSE).
     Json(serde_json::Value),
-    /// Return a `ServiceGatewayError`.
-    Error(ServiceGatewayError),
+    /// Return a `CanonicalError` (the SDK trait return type).
+    Error(CanonicalError),
 }
 
 struct MockGateway {
@@ -43,7 +43,7 @@ impl MockGateway {
         })
     }
 
-    fn returning_error(err: ServiceGatewayError) -> Arc<Self> {
+    fn returning_error(err: CanonicalError) -> Arc<Self> {
         Arc::new(MockGateway {
             response: Mutex::new(Some(MockResponse::Error(err))),
             last_request: Mutex::new(None),
@@ -73,21 +73,21 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: CreateUpstreamRequest,
-    ) -> Result<Upstream, ServiceGatewayError> {
+    ) -> Result<Upstream, CanonicalError> {
         unimplemented!()
     }
     async fn get_upstream(
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<Upstream, ServiceGatewayError> {
+    ) -> Result<Upstream, CanonicalError> {
         unimplemented!()
     }
     async fn list_upstreams(
         &self,
         _: SecurityContext,
         _: &ListQuery,
-    ) -> Result<Vec<Upstream>, ServiceGatewayError> {
+    ) -> Result<Vec<Upstream>, CanonicalError> {
         unimplemented!()
     }
     async fn update_upstream(
@@ -95,28 +95,24 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: uuid::Uuid,
         _: UpdateUpstreamRequest,
-    ) -> Result<Upstream, ServiceGatewayError> {
+    ) -> Result<Upstream, CanonicalError> {
         unimplemented!()
     }
     async fn delete_upstream(
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    ) -> Result<(), CanonicalError> {
         unimplemented!()
     }
     async fn create_route(
         &self,
         _: SecurityContext,
         _: CreateRouteRequest,
-    ) -> Result<Route, ServiceGatewayError> {
+    ) -> Result<Route, CanonicalError> {
         unimplemented!()
     }
-    async fn get_route(
-        &self,
-        _: SecurityContext,
-        _: uuid::Uuid,
-    ) -> Result<Route, ServiceGatewayError> {
+    async fn get_route(&self, _: SecurityContext, _: uuid::Uuid) -> Result<Route, CanonicalError> {
         unimplemented!()
     }
     async fn list_routes(
@@ -124,7 +120,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: Option<uuid::Uuid>,
         _: &ListQuery,
-    ) -> Result<Vec<Route>, ServiceGatewayError> {
+    ) -> Result<Vec<Route>, CanonicalError> {
         unimplemented!()
     }
     async fn update_route(
@@ -132,14 +128,10 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: uuid::Uuid,
         _: UpdateRouteRequest,
-    ) -> Result<Route, ServiceGatewayError> {
+    ) -> Result<Route, CanonicalError> {
         unimplemented!()
     }
-    async fn delete_route(
-        &self,
-        _: SecurityContext,
-        _: uuid::Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    async fn delete_route(&self, _: SecurityContext, _: uuid::Uuid) -> Result<(), CanonicalError> {
         unimplemented!()
     }
     async fn resolve_proxy_target(
@@ -148,14 +140,14 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: &str,
         _: &str,
         _: &str,
-    ) -> Result<(Upstream, Route), ServiceGatewayError> {
+    ) -> Result<(Upstream, Route), CanonicalError> {
         unimplemented!()
     }
     async fn proxy_request(
         &self,
         _ctx: SecurityContext,
         req: http::Request<Body>,
-    ) -> Result<http::Response<Body>, ServiceGatewayError> {
+    ) -> Result<http::Response<Body>, CanonicalError> {
         let uri = req.uri().to_string();
         let (_parts, body) = req.into_parts();
         let body_bytes = body.into_bytes().await.unwrap_or_default();
@@ -1414,13 +1406,20 @@ async fn cancellation_terminates_stream() {
 
 // ── Integration test: OAGW error paths ─────────────────────────────────
 
+#[resource_error("gts.cf.core.oagw.proxy.v1~")]
+struct TestProxyScope;
+
 #[tokio::test]
 async fn oagw_rate_limit_error() {
-    let gw = MockGateway::returning_error(ServiceGatewayError::RateLimitExceeded {
-        detail: "too many requests".into(),
-        instance: "/test".into(),
-        retry_after_secs: Some(30),
-    });
+    // End-to-end: canonical `ResourceExhausted` with a per-violation retry
+    // hint → `ServiceGatewayError::RateLimited` → `LlmProviderError::RateLimited`.
+    // The retry value must survive every hop unchanged.
+    let gw = MockGateway::returning_error(
+        TestProxyScope::resource_exhausted("rate limit exceeded")
+            .with_quota_violation(oagw_sdk::quota::RATE_LIMIT, "rate limit exceeded")
+            .with_quota_violation_retry_after_seconds(15)
+            .create(),
+    );
     let provider = OpenAiResponsesProvider::new(gw);
 
     let request = llm_request("gpt-4o").build_streaming();
@@ -1429,20 +1428,17 @@ async fn oagw_rate_limit_error() {
         .stream(test_security_context(), request, "openai", cancel)
         .await;
 
-    assert!(matches!(
-        result.unwrap_err(),
-        LlmProviderError::RateLimited {
-            retry_after_secs: Some(30)
+    match result.unwrap_err() {
+        LlmProviderError::RateLimited { retry_after_secs } => {
+            assert_eq!(retry_after_secs, Some(15));
         }
-    ));
+        other => panic!("expected RateLimited with retry=15, got {other:?}"),
+    }
 }
 
 #[tokio::test]
-async fn oagw_connection_timeout_error() {
-    let gw = MockGateway::returning_error(ServiceGatewayError::ConnectionTimeout {
-        detail: "timed out".into(),
-        instance: "/test".into(),
-    });
+async fn oagw_deadline_exceeded_error() {
+    let gw = MockGateway::returning_error(TestProxyScope::deadline_exceeded("timed out").create());
     let provider = OpenAiResponsesProvider::new(gw);
 
     let request = llm_request("gpt-4o").build_streaming();
@@ -1455,11 +1451,12 @@ async fn oagw_connection_timeout_error() {
 }
 
 #[tokio::test]
-async fn oagw_upstream_disabled_error() {
-    let gw = MockGateway::returning_error(ServiceGatewayError::UpstreamDisabled {
-        detail: "disabled".into(),
-        instance: "/test".into(),
-    });
+async fn oagw_unavailable_error() {
+    let gw = MockGateway::returning_error(
+        CanonicalError::service_unavailable()
+            .with_retry_after_seconds(30)
+            .create(),
+    );
     let provider = OpenAiResponsesProvider::new(gw);
 
     let request = llm_request("gpt-4o").build_streaming();

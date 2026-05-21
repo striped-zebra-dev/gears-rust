@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::context::{
+    Aborted, AlreadyExists, Cancelled, DataLoss, DeadlineExceeded, FailedPrecondition, Internal,
+    InvalidArgument, NotFound, OutOfRange, PermissionDenied, ResourceExhausted, ServiceUnavailable,
+    Unauthenticated, Unimplemented, Unknown,
+};
 use crate::error::CanonicalError;
 
 /// Media type for RFC 9457 `application/problem+json` responses.
@@ -137,6 +142,212 @@ impl From<CanonicalError> for Problem {
                 context: serde_json::Value::String(ser_err.to_string()),
             },
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip: Problem → CanonicalError
+//
+// Reverse direction of `From<CanonicalError> for Problem`. Out-of-process SDK
+// consumers receive `application/problem+json` over the wire, deserialize into
+// `Problem`, and reconstruct the typed `CanonicalError` via this `TryFrom`.
+// In-process consumers do not need this hop — they hold `CanonicalError`
+// directly from the ClientHub call.
+//
+// Lossy by design:
+// * `Internal.description` and `Unknown.description` are `#[serde(skip)]` on
+//   the wire, so they reconstruct as empty strings. This is intentional —
+//   production wire responses never carry the server-side diagnostic.
+// * Transport fields (`instance`, `trace_id`) live on `Problem`, not on
+//   `CanonicalError`. Callers that need them should read them off the
+//   `Problem` before converting.
+// ---------------------------------------------------------------------------
+
+/// Prefix on `Problem.problem_type` produced by the forward conversion.
+const PROBLEM_TYPE_PREFIX: &str = "gts://";
+
+/// Reasons a `Problem` cannot be reconstructed as a `CanonicalError`.
+#[derive(Debug, thiserror::Error)]
+pub enum ProblemConversionError {
+    /// The `problem_type` URI does not match any of the 16 canonical
+    /// category identifiers. Either the server emitted a non-canonical
+    /// problem or the wire format has drifted.
+    #[error("unrecognized problem_type: {0}")]
+    UnknownProblemType(String),
+
+    /// The `context` payload could not be deserialized into the context
+    /// type for the matched category. The category and underlying serde
+    /// error are surfaced for diagnostics.
+    #[error("invalid context for canonical category {category}: {source}")]
+    InvalidContext {
+        category: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// Prefix of every canonical GTS identifier. Stripped to expose the category
+/// name (e.g. `cancelled`, `invalid_argument`). Not a complete GTS string by
+/// itself — only the concatenation `{prefix}{category}{suffix}` is a valid
+/// GTS identifier.
+#[allow(unknown_lints, de0901_gts_string_pattern)]
+const GTS_TYPE_PREFIX: &str = "gts.cf.core.errors.err.v1~cf.core.err.";
+/// Suffix of every canonical GTS identifier. See [`GTS_TYPE_PREFIX`].
+const GTS_TYPE_SUFFIX: &str = ".v1~";
+
+/// Strip `gts://gts.cf.core.errors.err.v1~cf.core.err.<category>.v1~` down to
+/// `<category>`. Returns `None` if the URI doesn't match the canonical shape.
+fn category_from_problem_type(problem_type: &str) -> Option<&str> {
+    let rest = problem_type.strip_prefix(PROBLEM_TYPE_PREFIX)?;
+    let after_prefix = rest.strip_prefix(GTS_TYPE_PREFIX)?;
+    after_prefix.strip_suffix(GTS_TYPE_SUFFIX)
+}
+
+/// Extract `resource_type` and `resource_name` from the `Problem.context`
+/// JSON, returning the pair (both `None` if absent). The forward conversion
+/// stamps these as plain string fields alongside the category-specific
+/// payload; here we read them back without disturbing the serde
+/// deserialization of the category context (serde ignores unknown fields).
+fn extract_resource_fields(context: &serde_json::Value) -> (Option<String>, Option<String>) {
+    let resource_type = context
+        .get("resource_type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let resource_name = context
+        .get("resource_name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    (resource_type, resource_name)
+}
+
+fn deserialize_ctx<T>(
+    category: &'static str,
+    context: serde_json::Value,
+) -> Result<T, ProblemConversionError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(context)
+        .map_err(|source| ProblemConversionError::InvalidContext { category, source })
+}
+
+impl TryFrom<Problem> for CanonicalError {
+    type Error = ProblemConversionError;
+
+    fn try_from(problem: Problem) -> Result<Self, Self::Error> {
+        let category = category_from_problem_type(&problem.problem_type).ok_or_else(|| {
+            ProblemConversionError::UnknownProblemType(problem.problem_type.clone())
+        })?;
+
+        let detail = problem.detail;
+        let (resource_type, resource_name) = extract_resource_fields(&problem.context);
+        let ctx_value = problem.context;
+
+        let canonical = match category {
+            "cancelled" => Self::Cancelled {
+                ctx: deserialize_ctx::<Cancelled>("cancelled", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "unknown" => Self::Unknown {
+                ctx: deserialize_ctx::<Unknown>("unknown", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "invalid_argument" => Self::InvalidArgument {
+                ctx: deserialize_ctx::<InvalidArgument>("invalid_argument", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "deadline_exceeded" => Self::DeadlineExceeded {
+                ctx: deserialize_ctx::<DeadlineExceeded>("deadline_exceeded", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "not_found" => Self::NotFound {
+                ctx: deserialize_ctx::<NotFound>("not_found", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "already_exists" => Self::AlreadyExists {
+                ctx: deserialize_ctx::<AlreadyExists>("already_exists", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "permission_denied" => Self::PermissionDenied {
+                ctx: deserialize_ctx::<PermissionDenied>("permission_denied", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "resource_exhausted" => Self::ResourceExhausted {
+                ctx: deserialize_ctx::<ResourceExhausted>("resource_exhausted", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "failed_precondition" => Self::FailedPrecondition {
+                ctx: deserialize_ctx::<FailedPrecondition>("failed_precondition", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "aborted" => Self::Aborted {
+                ctx: deserialize_ctx::<Aborted>("aborted", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "out_of_range" => Self::OutOfRange {
+                ctx: deserialize_ctx::<OutOfRange>("out_of_range", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "unimplemented" => Self::Unimplemented {
+                ctx: deserialize_ctx::<Unimplemented>("unimplemented", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "internal" => Self::Internal {
+                // `Internal.description` is `#[serde(skip)]`; the wire
+                // never carries it, so it reconstructs as an empty string.
+                ctx: deserialize_ctx::<Internal>("internal", ctx_value)?,
+                detail,
+            },
+            "service_unavailable" => Self::ServiceUnavailable {
+                ctx: deserialize_ctx::<ServiceUnavailable>("service_unavailable", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "data_loss" => Self::DataLoss {
+                ctx: deserialize_ctx::<DataLoss>("data_loss", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            "unauthenticated" => Self::Unauthenticated {
+                ctx: deserialize_ctx::<Unauthenticated>("unauthenticated", ctx_value)?,
+                detail,
+                resource_type,
+                resource_name,
+            },
+            _ => {
+                return Err(ProblemConversionError::UnknownProblemType(
+                    problem.problem_type,
+                ));
+            }
+        };
+
+        Ok(canonical)
     }
 }
 

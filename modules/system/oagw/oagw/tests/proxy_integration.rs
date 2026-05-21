@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use http::{Method, StatusCode};
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 use oagw::test_support::{
     APIKEY_AUTH_PLUGIN_ID, AppHarness, MockBody, MockGuard, MockResponse, MockUpstream,
@@ -327,10 +328,7 @@ async fn proxy_nonexistent_alias_returns_404() {
         .proxy_request(h.security_context().clone(), req)
         .await
     {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::NotFound { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::NotFound { .. })),
         Ok(_) => panic!("expected error"),
     }
 }
@@ -368,10 +366,7 @@ async fn proxy_disabled_upstream_returns_503() {
         .body(Body::Empty)
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::UpstreamDisabled { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::ServiceUnavailable { .. })),
         Ok(_) => panic!("expected error"),
     }
 }
@@ -452,10 +447,7 @@ async fn proxy_rate_limit_exceeded_returns_429() {
         .body(Body::Empty)
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::RateLimitExceeded { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::ResourceExhausted { .. })),
         Ok(_) => panic!("expected rate limit error"),
     }
 }
@@ -561,10 +553,7 @@ async fn proxy_rate_limit_scope_user_isolates_by_subject() {
         .unwrap();
     match h.facade().proxy_request(user_a, req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::RateLimitExceeded { .. }
-            ),
+            matches!(err, CanonicalError::ResourceExhausted { .. }),
             "expected RateLimitExceeded, got: {err:?}"
         ),
         Ok(resp) => panic!("expected rate limit error, got status {}", resp.status()),
@@ -578,10 +567,7 @@ async fn proxy_rate_limit_scope_user_isolates_by_subject() {
         .unwrap();
     match h.facade().proxy_request(user_b, req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::RateLimitExceeded { .. }
-            ),
+            matches!(err, CanonicalError::ResourceExhausted { .. }),
             "expected RateLimitExceeded, got: {err:?}"
         ),
         Ok(resp) => panic!("expected rate limit error, got status {}", resp.status()),
@@ -726,10 +712,7 @@ async fn proxy_rate_limit_scope_route_isolates_by_route() {
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::RateLimitExceeded { .. }
-            ),
+            matches!(err, CanonicalError::ResourceExhausted { .. }),
             "expected RateLimitExceeded, got: {err:?}"
         ),
         Ok(resp) => panic!("expected rate limit error, got status {}", resp.status()),
@@ -743,10 +726,7 @@ async fn proxy_rate_limit_scope_route_isolates_by_route() {
         .unwrap();
     match h.facade().proxy_request(ctx, req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::RateLimitExceeded { .. }
-            ),
+            matches!(err, CanonicalError::ResourceExhausted { .. }),
             "expected RateLimitExceeded, got: {err:?}"
         ),
         Ok(resp) => panic!("expected rate limit error, got status {}", resp.status()),
@@ -822,10 +802,7 @@ async fn proxy_upstream_timeout_returns_504() {
         .body(Body::Empty)
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::RequestTimeout { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::DeadlineExceeded { .. })),
         Ok(_) => panic!("expected timeout error"),
     }
 }
@@ -936,10 +913,7 @@ async fn proxy_query_allowlist_unknown_param_rejected() {
         .body(Body::Empty)
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::ValidationError { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::InvalidArgument { .. })),
         Ok(_) => panic!("expected validation error"),
     }
 }
@@ -1001,10 +975,7 @@ async fn proxy_nonexistent_auth_plugin_returns_error() {
         .body(Body::Empty)
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::AuthenticationFailed { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::Unauthenticated { .. })),
         Ok(_) => panic!("expected authentication error for non-existent plugin"),
     }
 }
@@ -1244,10 +1215,7 @@ async fn proxy_path_suffix_disabled_rejects_extra_path() {
         .body(Body::Empty)
         .unwrap();
     match h.facade().proxy_request(ctx.clone(), req).await {
-        Err(err) => assert!(matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::ValidationError { .. }
-        )),
+        Err(err) => assert!(matches!(err, CanonicalError::InvalidArgument { .. })),
         Ok(_) => panic!("expected validation error for disabled path_suffix_mode"),
     }
 }
@@ -1465,11 +1433,8 @@ async fn proxy_target_host_unknown_returns_error() {
 
     match h.facade().proxy_request(ctx.clone(), req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::UnknownTargetHost { .. }
-            ),
-            "expected UnknownTargetHost, got: {err:?}"
+            matches!(err, CanonicalError::InvalidArgument { .. }),
+            "expected InvalidTargetHost (Unknown), got: {err:?}"
         ),
         Ok(_) => panic!("expected error for unknown target host"),
     }
@@ -1533,10 +1498,7 @@ async fn proxy_all_backends_unreachable() {
 
     match h.facade().proxy_request(ctx.clone(), req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::DownstreamError { .. }
-            ),
+            matches!(err, CanonicalError::ServiceUnavailable { .. }),
             "expected DownstreamError for unreachable backend, got: {err:?}"
         ),
         Ok(resp) => {
@@ -1873,10 +1835,7 @@ async fn proxy_websocket_upgrade_rejected_returns_503_protocol_error() {
         .expect_err("expected ProtocolError for rejected WebSocket upgrade");
 
     assert!(
-        matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::ProtocolError { .. }
-        ),
+        matches!(err, CanonicalError::ServiceUnavailable { .. }),
         "expected ProtocolError, got {err:?}"
     );
 }
@@ -2003,10 +1962,7 @@ async fn proxy_websocket_auth_injected_during_handshake() {
         .await
         .expect_err("mock returns 200, so upgrade should fail with ProtocolError");
     assert!(
-        matches!(
-            err,
-            oagw_sdk::error::ServiceGatewayError::ProtocolError { .. }
-        ),
+        matches!(err, CanonicalError::ServiceUnavailable { .. }),
         "expected ProtocolError, got {err:?}"
     );
 
@@ -2128,10 +2084,7 @@ async fn proxy_websocket_rate_limit_on_handshake() {
         .unwrap();
     match h.facade().proxy_request(ctx, req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::RateLimitExceeded { .. }
-            ),
+            matches!(err, CanonicalError::ResourceExhausted { .. }),
             "expected RateLimitExceeded, got: {err:?}"
         ),
         Ok(resp) => panic!(
@@ -2240,11 +2193,10 @@ async fn proxy_unreachable_backend_returns_rfc9457_problem_body() {
             assert!(
                 matches!(
                     err,
-                    oagw_sdk::error::ServiceGatewayError::DownstreamError { .. }
-                        | oagw_sdk::error::ServiceGatewayError::ConnectionTimeout { .. }
-                        | oagw_sdk::error::ServiceGatewayError::RequestTimeout { .. }
+                    CanonicalError::ServiceUnavailable { .. }
+                        | CanonicalError::DeadlineExceeded { .. }
                 ),
-                "expected DownstreamError, ConnectionTimeout, or RequestTimeout for unreachable backend, got: {err:?}"
+                "expected ServiceUnavailable or DeadlineExceeded for unreachable backend, got: {err:?}"
             );
         }
         Ok(resp) => {
@@ -2360,10 +2312,7 @@ async fn proxy_streaming_body_exceeding_limit_returns_400() {
 
     match h.facade().proxy_request(ctx.clone(), req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::PayloadTooLarge { .. }
-            ),
+            matches!(err, CanonicalError::OutOfRange { .. }),
             "expected PayloadTooLarge, got: {err:?}"
         ),
         Ok(resp) => panic!(
@@ -2719,10 +2668,7 @@ async fn proxy_streaming_body_error_mid_stream_does_not_send_terminator() {
 
     match h.facade().proxy_request(ctx.clone(), req).await {
         Err(err) => assert!(
-            matches!(
-                err,
-                oagw_sdk::error::ServiceGatewayError::DownstreamError { .. }
-            ),
+            matches!(err, CanonicalError::ServiceUnavailable { .. }),
             "expected DownstreamError, got: {err:?}"
         ),
         Ok(resp) => panic!(
@@ -3123,14 +3069,27 @@ async fn proxy_guard_rejects_missing_required_header() {
         .await
         .expect_err("guard should reject missing required header");
 
+    // GuardRejected no longer exists as a typed variant — the impl crate
+    // maps a 400/422 guard rejection into the canonical `InvalidArgument`
+    // category with the plugin-supplied `error_code` in
+    // `field_violations[].reason`. Assert directly on the canonical.
     match err {
-        oagw_sdk::error::ServiceGatewayError::GuardRejected {
-            status, error_code, ..
-        } => {
-            assert_eq!(status, 400);
-            assert_eq!(error_code, "REQUIRED_HEADER_MISSING");
+        CanonicalError::InvalidArgument { ctx, .. } => {
+            let reason = match ctx {
+                modkit_canonical_errors::InvalidArgument::FieldViolations { field_violations } => {
+                    field_violations
+                        .first()
+                        .map(|v| v.reason.clone())
+                        .unwrap_or_default()
+                }
+                _ => panic!("expected FieldViolations variant"),
+            };
+            assert_eq!(
+                reason, "REQUIRED_HEADER_MISSING",
+                "expected REQUIRED_HEADER_MISSING in field_violations[].reason, got {reason}",
+            );
         }
-        other => panic!("expected GuardRejected, got: {other:?}"),
+        other => panic!("expected InvalidArgument, got {other:?}"),
     }
 
     // Verify the request never reached the upstream.

@@ -234,7 +234,7 @@ impl ProviderResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oagw_sdk::error::ServiceGatewayError;
+    use modkit_canonical_errors::CanonicalError;
 
     /// Minimal no-op gateway for tests that only need `Arc<dyn ServiceGatewayClientV1>`.
     struct NullGateway;
@@ -245,21 +245,21 @@ mod tests {
             &self,
             _: modkit_security::SecurityContext,
             _: oagw_sdk::CreateUpstreamRequest,
-        ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Upstream, CanonicalError> {
             unimplemented!()
         }
         async fn get_upstream(
             &self,
             _: modkit_security::SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Upstream, CanonicalError> {
             unimplemented!()
         }
         async fn list_upstreams(
             &self,
             _: modkit_security::SecurityContext,
             _: &oagw_sdk::ListQuery,
-        ) -> Result<Vec<oagw_sdk::Upstream>, ServiceGatewayError> {
+        ) -> Result<Vec<oagw_sdk::Upstream>, CanonicalError> {
             unimplemented!()
         }
         async fn update_upstream(
@@ -267,28 +267,28 @@ mod tests {
             _: modkit_security::SecurityContext,
             _: uuid::Uuid,
             _: oagw_sdk::UpdateUpstreamRequest,
-        ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Upstream, CanonicalError> {
             unimplemented!()
         }
         async fn delete_upstream(
             &self,
             _: modkit_security::SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<(), ServiceGatewayError> {
+        ) -> Result<(), CanonicalError> {
             unimplemented!()
         }
         async fn create_route(
             &self,
             _: modkit_security::SecurityContext,
             _: oagw_sdk::CreateRouteRequest,
-        ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Route, CanonicalError> {
             unimplemented!()
         }
         async fn get_route(
             &self,
             _: modkit_security::SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Route, CanonicalError> {
             unimplemented!()
         }
         async fn list_routes(
@@ -296,7 +296,7 @@ mod tests {
             _: modkit_security::SecurityContext,
             _: Option<uuid::Uuid>,
             _: &oagw_sdk::ListQuery,
-        ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
+        ) -> Result<Vec<oagw_sdk::Route>, CanonicalError> {
             unimplemented!()
         }
         async fn update_route(
@@ -304,14 +304,14 @@ mod tests {
             _: modkit_security::SecurityContext,
             _: uuid::Uuid,
             _: oagw_sdk::UpdateRouteRequest,
-        ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+        ) -> Result<oagw_sdk::Route, CanonicalError> {
             unimplemented!()
         }
         async fn delete_route(
             &self,
             _: modkit_security::SecurityContext,
             _: uuid::Uuid,
-        ) -> Result<(), ServiceGatewayError> {
+        ) -> Result<(), CanonicalError> {
             unimplemented!()
         }
         async fn resolve_proxy_target(
@@ -320,14 +320,14 @@ mod tests {
             _: &str,
             _: &str,
             _: &str,
-        ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), ServiceGatewayError> {
+        ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), CanonicalError> {
             unimplemented!()
         }
         async fn proxy_request(
             &self,
             _: modkit_security::SecurityContext,
             _: http::Request<oagw_sdk::Body>,
-        ) -> Result<http::Response<oagw_sdk::Body>, ServiceGatewayError> {
+        ) -> Result<http::Response<oagw_sdk::Body>, CanonicalError> {
             unimplemented!()
         }
     }

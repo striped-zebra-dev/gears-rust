@@ -17,10 +17,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Request, Response};
 use http_body_util::{BodyExt, Full};
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 use oagw_sdk::api::ServiceGatewayClientV1;
 use oagw_sdk::body::Body;
-use oagw_sdk::error::ServiceGatewayError;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -95,21 +95,21 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _: SecurityContext,
         _: oagw_sdk::CreateUpstreamRequest,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         unimplemented!()
     }
     async fn get_upstream(
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         unimplemented!()
     }
     async fn list_upstreams(
         &self,
         _: SecurityContext,
         _: &oagw_sdk::ListQuery,
-    ) -> Result<Vec<oagw_sdk::Upstream>, ServiceGatewayError> {
+    ) -> Result<Vec<oagw_sdk::Upstream>, CanonicalError> {
         unimplemented!()
     }
     async fn update_upstream(
@@ -117,28 +117,28 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: uuid::Uuid,
         _: oagw_sdk::UpdateUpstreamRequest,
-    ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Upstream, CanonicalError> {
         unimplemented!()
     }
     async fn delete_upstream(
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    ) -> Result<(), CanonicalError> {
         unimplemented!()
     }
     async fn create_route(
         &self,
         _: SecurityContext,
         _: oagw_sdk::CreateRouteRequest,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         unimplemented!()
     }
     async fn get_route(
         &self,
         _: SecurityContext,
         _: uuid::Uuid,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         unimplemented!()
     }
     async fn list_routes(
@@ -146,7 +146,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: Option<uuid::Uuid>,
         _: &oagw_sdk::ListQuery,
-    ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
+    ) -> Result<Vec<oagw_sdk::Route>, CanonicalError> {
         unimplemented!()
     }
     async fn update_route(
@@ -154,14 +154,10 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: SecurityContext,
         _: uuid::Uuid,
         _: oagw_sdk::UpdateRouteRequest,
-    ) -> Result<oagw_sdk::Route, ServiceGatewayError> {
+    ) -> Result<oagw_sdk::Route, CanonicalError> {
         unimplemented!()
     }
-    async fn delete_route(
-        &self,
-        _: SecurityContext,
-        _: uuid::Uuid,
-    ) -> Result<(), ServiceGatewayError> {
+    async fn delete_route(&self, _: SecurityContext, _: uuid::Uuid) -> Result<(), CanonicalError> {
         unimplemented!()
     }
     async fn resolve_proxy_target(
@@ -170,7 +166,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         _: &str,
         _: &str,
         _: &str,
-    ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), ServiceGatewayError> {
+    ) -> Result<(oagw_sdk::Upstream, oagw_sdk::Route), CanonicalError> {
         unimplemented!()
     }
 
@@ -178,7 +174,7 @@ impl ServiceGatewayClientV1 for MockGateway {
         &self,
         _ctx: SecurityContext,
         _req: http::Request<Body>,
-    ) -> Result<http::Response<Body>, ServiceGatewayError> {
+    ) -> Result<http::Response<Body>, CanonicalError> {
         Ok(self
             .response
             .lock()

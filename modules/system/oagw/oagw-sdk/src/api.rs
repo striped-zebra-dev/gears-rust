@@ -1,9 +1,9 @@
 use async_trait::async_trait;
+use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::body::Body;
-use crate::error::ServiceGatewayError;
 use crate::{
     CreateRouteRequest, CreateUpstreamRequest, ListQuery, Route, UpdateRouteRequest,
     UpdateUpstreamRequest, Upstream,
@@ -39,10 +39,26 @@ impl ErrorSource {
 
 /// Public API trait for the Outbound API Gateway (Version 1).
 ///
-/// This trait is registered in `ClientHub` by the OAGW module:
+/// All fallible methods return `Result<_, CanonicalError>` — the platform's
+/// canonical error type — so consumers can propagate or wrap failures
+/// uniformly across SDKs.
+///
+/// For flat typed dispatch on common failure modes, project at the call
+/// site via [`crate::ServiceGatewayError::from`]:
+///
 /// ```ignore
-/// let gw = hub.get::<dyn ServiceGatewayClientV1>()?;
+/// // Path A: propagate canonical (default; lossless, uniform across SDKs)
+/// let upstream = gw.get_upstream(ctx, id).await?;
+///
+/// // Path B: project to typed for flat dispatch
+/// let upstream = gw.get_upstream(ctx, id).await
+///     .map_err(oagw_sdk::ServiceGatewayError::from)?;
 /// ```
+///
+/// The projection is infallible (`From<CanonicalError>` lands in
+/// [`crate::ServiceGatewayError::Other`] for unmodeled categories). See
+/// [`crate::error`] for the disposition reference and the typed
+/// sub-enums in [`crate::field`], [`crate::reason`], [`crate::gts`].
 #[async_trait]
 pub trait ServiceGatewayClientV1: Send + Sync {
     // -- Upstream CRUD --
@@ -51,32 +67,28 @@ pub trait ServiceGatewayClientV1: Send + Sync {
         &self,
         ctx: SecurityContext,
         req: CreateUpstreamRequest,
-    ) -> Result<Upstream, ServiceGatewayError>;
+    ) -> Result<Upstream, CanonicalError>;
 
     async fn get_upstream(
         &self,
         ctx: SecurityContext,
         id: Uuid,
-    ) -> Result<Upstream, ServiceGatewayError>;
+    ) -> Result<Upstream, CanonicalError>;
 
     async fn list_upstreams(
         &self,
         ctx: SecurityContext,
         query: &ListQuery,
-    ) -> Result<Vec<Upstream>, ServiceGatewayError>;
+    ) -> Result<Vec<Upstream>, CanonicalError>;
 
     async fn update_upstream(
         &self,
         ctx: SecurityContext,
         id: Uuid,
         req: UpdateUpstreamRequest,
-    ) -> Result<Upstream, ServiceGatewayError>;
+    ) -> Result<Upstream, CanonicalError>;
 
-    async fn delete_upstream(
-        &self,
-        ctx: SecurityContext,
-        id: Uuid,
-    ) -> Result<(), ServiceGatewayError>;
+    async fn delete_upstream(&self, ctx: SecurityContext, id: Uuid) -> Result<(), CanonicalError>;
 
     // -- Route CRUD --
 
@@ -84,27 +96,25 @@ pub trait ServiceGatewayClientV1: Send + Sync {
         &self,
         ctx: SecurityContext,
         req: CreateRouteRequest,
-    ) -> Result<Route, ServiceGatewayError>;
+    ) -> Result<Route, CanonicalError>;
 
-    async fn get_route(&self, ctx: SecurityContext, id: Uuid)
-    -> Result<Route, ServiceGatewayError>;
+    async fn get_route(&self, ctx: SecurityContext, id: Uuid) -> Result<Route, CanonicalError>;
 
     async fn list_routes(
         &self,
         ctx: SecurityContext,
         upstream_id: Option<Uuid>,
         query: &ListQuery,
-    ) -> Result<Vec<Route>, ServiceGatewayError>;
+    ) -> Result<Vec<Route>, CanonicalError>;
 
     async fn update_route(
         &self,
         ctx: SecurityContext,
         id: Uuid,
         req: UpdateRouteRequest,
-    ) -> Result<Route, ServiceGatewayError>;
+    ) -> Result<Route, CanonicalError>;
 
-    async fn delete_route(&self, ctx: SecurityContext, id: Uuid)
-    -> Result<(), ServiceGatewayError>;
+    async fn delete_route(&self, ctx: SecurityContext, id: Uuid) -> Result<(), CanonicalError>;
 
     // -- Resolution --
 
@@ -121,7 +131,7 @@ pub trait ServiceGatewayClientV1: Send + Sync {
         alias: &str,
         method: &str,
         path: &str,
-    ) -> Result<(Upstream, Route), ServiceGatewayError>;
+    ) -> Result<(Upstream, Route), CanonicalError>;
 
     // -- Proxy --
 
@@ -143,5 +153,5 @@ pub trait ServiceGatewayClientV1: Send + Sync {
         &self,
         ctx: SecurityContext,
         req: http::Request<Body>,
-    ) -> Result<http::Response<Body>, ServiceGatewayError>;
+    ) -> Result<http::Response<Body>, CanonicalError>;
 }

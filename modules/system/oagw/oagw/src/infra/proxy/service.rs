@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue};
 use modkit_security::SecurityContext;
 use oagw_sdk::body::{Body, BodyStream};
+use oagw_sdk::{field, reason};
 use pingora_core::apps::HttpServerApp;
 use pingora_proxy::HttpProxy;
 use tokio::io::AsyncWriteExt;
@@ -497,7 +498,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
                 if !http_match.query_allowlist.contains(key) {
                     return Err(DomainError::Validation {
                         field: "query",
-                        reason: "QUERY_NOT_ALLOWED",
+                        reason: field::QUERY_NOT_ALLOWED,
                         detail: format!(
                             "query parameter '{}' is not in the route's query_allowlist",
                             key
@@ -517,7 +518,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
             if !extra.is_empty() {
                 return Err(DomainError::Validation {
                     field: "path",
-                    reason: "PATH_SUFFIX_NOT_ALLOWED",
+                    reason: field::PATH_SUFFIX_NOT_ALLOWED,
                     detail: format!(
                         "path suffix not allowed: route path_suffix_mode is disabled but request has extra path '{}'",
                         extra
@@ -636,7 +637,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
         if !self.allow_http_upstream && matches!(endpoint.scheme, Scheme::Http) {
             return Err(DomainError::Validation {
                 field: "endpoint.scheme",
-                reason: "HTTP_UPSTREAM_FORBIDDEN",
+                reason: field::HTTP_UPSTREAM_FORBIDDEN,
                 detail: "upstream endpoint uses HTTP; only HTTPS endpoints are permitted".into(),
                 instance: instance_uri,
             });
@@ -1079,7 +1080,7 @@ async fn execute_auth_plugin(
     tracing::debug!(plugin = %auth.plugin_type, "executing auth plugin");
     let plugin = auth_registry.resolve(&auth.plugin_type).map_err(|e| {
         DomainError::AuthenticationFailed {
-            reason: "AUTH_PLUGIN_NOT_FOUND",
+            reason: reason::auth::PLUGIN_NOT_FOUND,
             detail: e.to_string(),
             instance: instance_uri.to_string(),
         }
@@ -1103,20 +1104,20 @@ async fn execute_auth_plugin(
             | crate::domain::plugin::PluginError::InvalidConfig(ref msg) => {
                 DomainError::Validation {
                     field: "plugin",
-                    reason: "INVALID_PLUGIN_CONFIG",
+                    reason: field::INVALID_PLUGIN_CONFIG,
                     detail: msg.clone(),
                     instance: instance_uri.to_string(),
                 }
             }
             crate::domain::plugin::PluginError::AuthFailed(_) => {
                 DomainError::AuthenticationFailed {
-                    reason: "AUTH_PLUGIN_FAILED",
+                    reason: reason::auth::PLUGIN_FAILED,
                     detail: e.to_string(),
                     instance: instance_uri.to_string(),
                 }
             }
             crate::domain::plugin::PluginError::Internal(_) => DomainError::AuthenticationFailed {
-                reason: "AUTH_PLUGIN_INTERNAL",
+                reason: reason::auth::PLUGIN_INTERNAL,
                 detail: e.to_string(),
                 instance: instance_uri.to_string(),
             },

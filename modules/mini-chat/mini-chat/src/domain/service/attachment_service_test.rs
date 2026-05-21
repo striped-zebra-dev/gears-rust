@@ -2,7 +2,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use modkit_canonical_errors::{CanonicalError, resource_error};
 use uuid::Uuid;
+
+/// Local resource scope for fabricating canonical errors that mirror what
+/// the OAGW impl crate emits at runtime — used by the `MockOagwGateway`
+/// fixtures below.
+#[resource_error("gts.cf.core.oagw.proxy.v1~")]
+struct TestProxyScope;
+
+fn timeout_error(detail: &str) -> CanonicalError {
+    TestProxyScope::deadline_exceeded(detail.to_owned()).create()
+}
 
 use crate::config::{ProviderEntry, RagConfig, StorageKind};
 use crate::domain::repos::VectorStoreRepository as VectorStoreRepoTrait;
@@ -691,11 +702,7 @@ async fn test_upload_provider_failure_sets_failed() {
     let ctx = crate::domain::service::test_helpers::test_security_ctx_with_id(tenant_id, user_id);
 
     // OAGW returns error on file upload
-    let oagw =
-        MockOagwGateway::single_error(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
-            detail: "mock timeout".to_owned(),
-            instance: String::new(),
-        });
+    let oagw = MockOagwGateway::single_error(timeout_error("mock timeout"));
 
     let outbox = Arc::new(NoopOutboxEnqueuer);
     let svc = build_service(db, Arc::clone(&oagw) as _, outbox, RagConfig::default());
@@ -1037,10 +1044,7 @@ async fn test_upload_vector_store_indexing_fails() {
     let oagw = MockOagwGateway::with_responses(vec![
         Ok(file_upload_response("file-idx-fail")),
         Ok(vector_store_create_response("vs-idx-fail")),
-        Err(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
-            detail: "indexing timeout".to_owned(),
-            instance: String::new(),
-        }),
+        Err(timeout_error("indexing timeout")),
     ]);
 
     let outbox = Arc::new(NoopOutboxEnqueuer);
@@ -1090,10 +1094,7 @@ async fn test_create_vector_store_failure_cleans_up_placeholder_row() {
     // File upload succeeds, then VS create fails (2nd OAGW call)
     let oagw = MockOagwGateway::with_responses(vec![
         Ok(file_upload_response("file-vs-fail")),
-        Err(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
-            detail: "VS create timeout".to_owned(),
-            instance: String::new(),
-        }),
+        Err(timeout_error("VS create timeout")),
     ]);
 
     let outbox = Arc::new(NoopOutboxEnqueuer);
@@ -1149,10 +1150,7 @@ async fn test_vector_store_failure_sets_attachment_failed() {
     // File upload succeeds (1st), VS create fails (2nd), file delete succeeds (3rd — spawned cleanup)
     let oagw = MockOagwGateway::with_responses(vec![
         Ok(file_upload_response("file-vs-fail-2")),
-        Err(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
-            detail: "VS create timeout".to_owned(),
-            instance: String::new(),
-        }),
+        Err(timeout_error("VS create timeout")),
         Ok(serde_json::json!({"deleted": true})), // fire-and-forget file delete
     ]);
 

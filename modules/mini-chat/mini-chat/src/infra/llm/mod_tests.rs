@@ -2,6 +2,7 @@
 #![allow(clippy::str_to_string)]
 use super::*;
 use oagw_sdk::error::ServiceGatewayError;
+use oagw_sdk::reason::auth::FailureReason as AuthFailureReason;
 
 #[test]
 fn sanitize_removes_provider_response_ids() {
@@ -53,55 +54,75 @@ fn raw_detail_preserves_original() {
 
 #[test]
 fn gateway_rate_limit_maps_to_rate_limited() {
-    let err = ServiceGatewayError::RateLimitExceeded {
-        detail: "too many requests".into(),
-        instance: "/test".into(),
-        retry_after_secs: Some(60),
+    let err = ServiceGatewayError::RateLimited {
+        retry_after_secs: None,
     };
     let mapped: LlmProviderError = err.into();
     assert!(matches!(
         mapped,
         LlmProviderError::RateLimited {
-            retry_after_secs: Some(60)
-        }
+            retry_after_secs: None,
+        },
     ));
 }
 
 #[test]
-fn gateway_connection_timeout_maps_to_timeout() {
-    let err = ServiceGatewayError::ConnectionTimeout {
-        detail: "timed out".into(),
-        instance: "/test".into(),
+fn gateway_rate_limit_forwards_retry_hint() {
+    let err = ServiceGatewayError::RateLimited {
+        retry_after_secs: Some(15),
     };
     let mapped: LlmProviderError = err.into();
+    assert!(matches!(
+        mapped,
+        LlmProviderError::RateLimited {
+            retry_after_secs: Some(15),
+        },
+    ));
+}
+
+#[test]
+fn gateway_timeout_maps_to_timeout() {
+    let mapped: LlmProviderError = ServiceGatewayError::Timeout.into();
     assert!(matches!(mapped, LlmProviderError::Timeout));
 }
 
 #[test]
-fn gateway_request_timeout_maps_to_timeout() {
-    let err = ServiceGatewayError::RequestTimeout {
-        detail: "timed out".into(),
-        instance: "/test".into(),
-    };
-    let mapped: LlmProviderError = err.into();
-    assert!(matches!(mapped, LlmProviderError::Timeout));
-}
-
-#[test]
-fn gateway_upstream_disabled_maps_to_unavailable() {
-    let err = ServiceGatewayError::UpstreamDisabled {
-        detail: "disabled".into(),
-        instance: "/test".into(),
+fn gateway_unavailable_maps_to_provider_unavailable() {
+    let err = ServiceGatewayError::Unavailable {
+        retry_after_secs: Some(5),
     };
     let mapped: LlmProviderError = err.into();
     assert!(matches!(mapped, LlmProviderError::ProviderUnavailable));
 }
 
 #[test]
-fn gateway_downstream_error_maps_to_provider_error() {
-    let err = ServiceGatewayError::DownstreamError {
+fn gateway_auth_plugin_internal_maps_to_provider_unavailable() {
+    // AUTH_PLUGIN_INTERNAL indicates the gateway-side auth machinery
+    // itself failed (plugin panic, transport). Treat as transient
+    // unavailability, not a hard auth rejection.
+    let err = ServiceGatewayError::AuthFailed {
+        reason: AuthFailureReason::PluginInternal,
+        detail: "plugin crashed".into(),
+    };
+    let mapped: LlmProviderError = err.into();
+    assert!(matches!(mapped, LlmProviderError::ProviderUnavailable));
+}
+
+#[test]
+fn gateway_auth_plugin_failed_maps_to_provider_error() {
+    // PluginFailed = creds rejected; user-facing failure, not transient.
+    let err = ServiceGatewayError::AuthFailed {
+        reason: AuthFailureReason::PluginFailed,
+        detail: "bad token".into(),
+    };
+    let mapped: LlmProviderError = err.into();
+    assert!(matches!(mapped, LlmProviderError::ProviderError { .. }));
+}
+
+#[test]
+fn gateway_internal_maps_to_provider_error() {
+    let err = ServiceGatewayError::Internal {
         detail: "resp_xyz789 failed at https://api.example.com".into(),
-        instance: "/test".into(),
     };
     let mapped: LlmProviderError = err.into();
     match mapped {

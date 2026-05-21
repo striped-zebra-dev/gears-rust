@@ -2,7 +2,11 @@ pub mod api;
 pub mod body;
 pub mod codec;
 pub mod error;
+pub mod field;
+pub mod gts;
 pub mod multipart;
+pub mod quota;
+pub mod reason;
 pub mod sse;
 pub mod ws;
 
@@ -22,7 +26,7 @@ pub use models::{
 pub use api::ServiceGatewayClientV1;
 pub use body::Body;
 pub use codec::Json;
-pub use error::StreamingError;
+pub use error::{ServiceGatewayError, StreamingError};
 pub use multipart::{MultipartBody, MultipartError, Part};
 pub use sse::{FromServerEvent, ServerEvent, ServerEventsResponse, ServerEventsStream};
 #[cfg(feature = "axum")]
