@@ -337,6 +337,44 @@ async fn handle_provision_failure_clean_compensates_and_returns_idp_unavailable(
 }
 
 #[tokio::test]
+#[tracing_test::traced_test]
+async fn handle_provision_failure_clean_emits_warn_log_with_redacted_detail() {
+    // `IdpProvisionFailure::CleanFailure` carries the provider's raw
+    // `detail` which can include vendor SDK strings (hostnames, token-
+    // bearing fragments, stack traces). The saga MUST surface a
+    // triage breadcrumb via `tracing::warn!` on `am.idp` but the raw
+    // detail MUST NOT reach the log channel — only its digest + length
+    // (matching the Ambiguous and Unavailable arms).
+    let repo = Arc::new(FakeTenantRepo::new());
+    seed_root(&repo, TenantStatus::Provisioning);
+    let (_idp, svc) = make_bootstrap(repo.clone(), FakeOutcome::Ok);
+    let scope = AccessScope::allow_all();
+
+    let _ = svc
+        .handle_provision_failure(
+            &scope,
+            root_id(),
+            IdpProvisionFailure::CleanFailure {
+                detail: "fake clean detail string with secret-looking content".into(),
+            },
+        )
+        .await;
+
+    assert!(
+        logs_contain("idp provision returned CleanFailure during bootstrap"),
+        "CleanFailure arm MUST emit a warn-level log for triage"
+    );
+    assert!(
+        logs_contain("detail_digest") && logs_contain("detail_len_chars"),
+        "warn log MUST carry redacted digest + length, not raw provider detail"
+    );
+    assert!(
+        !logs_contain("fake clean detail string with secret-looking content"),
+        "raw provider detail MUST be redacted from structured logs"
+    );
+}
+
+#[tokio::test]
 async fn handle_provision_failure_ambiguous_keeps_row_returns_internal() {
     let repo = Arc::new(FakeTenantRepo::new());
     seed_root(&repo, TenantStatus::Provisioning);

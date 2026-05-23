@@ -172,7 +172,7 @@ use modkit_gts::gts_type_schema;
     dir_path = "schemas",
     schema_id = "gts.cf.core.am.user.v1~",
     description = "Account Management user resource — IdP-issued user identity projection",
-    properties = "id,username,email,display_name",
+    properties = "id,username,email,display_name,first_name,last_name",
     base = true
 )]
 pub struct UserV1 {
@@ -185,6 +185,10 @@ pub struct UserV1 {
     pub email: Option<String>,
     /// Optional display name.
     pub display_name: Option<String>,
+    /// Optional given name (Keycloak `firstName`, OIDC `given_name`).
+    pub first_name: Option<String>,
+    /// Optional family name (Keycloak `lastName`, OIDC `family_name`).
+    pub last_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

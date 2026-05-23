@@ -3,7 +3,7 @@
 //! In-memory echo: every operation succeeds with a deterministic
 //! payload derived from its inputs. Provisioned users are retained in
 //! a per-tenant `HashMap` so `list_users` and the
-//! `?user_id_filter=<id>` existence-check shape both observe what
+//! `$filter=id eq <uuid>` existence-check shape both observe what
 //! `provision_user` just wrote -- a real provider would expose the
 //! same lifecycle. State lives in-process and is dropped on restart,
 //! matching the dev-only contract of every other `static-*-plugin`.
@@ -84,6 +84,12 @@ impl Service {
         if let Some(display_name) = &payload.display_name {
             user = user.with_display_name(display_name.clone());
         }
+        if let Some(first_name) = &payload.first_name {
+            user = user.with_first_name(first_name.clone());
+        }
+        if let Some(last_name) = &payload.last_name {
+            user = user.with_last_name(last_name.clone());
+        }
         user
     }
 
@@ -115,20 +121,17 @@ impl Service {
         removed
     }
 
-    /// Snapshot the per-tenant user map for listing. Optionally
-    /// narrows to a single `user_id` so the existence-check shape
-    /// (`?user_id_filter=<id>`) returns either an empty list or a
-    /// single-element list.
+    /// Returns the full per-tenant user snapshot. Filtering / ordering /
+    /// pagination are applied by the caller (`client.rs::list_users`) over
+    /// this snapshot. See [`crate::domain::client::list_users`] for the
+    /// `FilterNode<IdpUserFilterField>` walker + cursor semantics.
     #[must_use]
-    pub fn snapshot_users(&self, tenant_id: Uuid, user_id_filter: Option<Uuid>) -> Vec<IdpUser> {
-        let guard = self.users.lock();
-        let Some(scope) = guard.get(&tenant_id) else {
-            return Vec::new();
-        };
-        match user_id_filter {
-            Some(uid) => scope.get(&uid).cloned().into_iter().collect(),
-            None => scope.values().cloned().collect(),
-        }
+    pub fn snapshot_users(&self, tenant_id: Uuid) -> Vec<IdpUser> {
+        self.users
+            .lock()
+            .get(&tenant_id)
+            .map(|scope| scope.values().cloned().collect())
+            .unwrap_or_default()
     }
 }
 

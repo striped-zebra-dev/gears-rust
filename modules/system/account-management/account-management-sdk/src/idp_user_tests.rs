@@ -218,4 +218,298 @@ fn new_user_payload_serde_skips_absent_optionals() {
     let map = json.as_object().expect("json object");
     assert!(map.contains_key("username"));
     assert!(!map.contains_key("email"));
+    assert!(!map.contains_key("display_name"));
+    assert!(!map.contains_key("first_name"));
+    assert!(!map.contains_key("last_name"));
+    assert!(!map.contains_key("password"));
+}
+
+#[test]
+fn new_user_payload_builders_populate_all_optionals() {
+    // Builder methods stay additive — chaining first/last/password
+    // does not erase earlier email/display-name. Plugins that bind to
+    // the granular fields rely on first_name/last_name being preserved
+    // alongside display_name (the SDK doc-comment commits to that).
+    let payload = IdpNewUser::new("alice")
+        .with_email("alice@example.test")
+        .with_display_name("Alice A")
+        .with_first_name("Alice")
+        .with_last_name("Anderson")
+        .with_password("s3cret!", true);
+    assert_eq!(payload.username, "alice");
+    assert_eq!(payload.email.as_deref(), Some("alice@example.test"));
+    assert_eq!(payload.display_name.as_deref(), Some("Alice A"));
+    assert_eq!(payload.first_name.as_deref(), Some("Alice"));
+    assert_eq!(payload.last_name.as_deref(), Some("Anderson"));
+    let pw = payload.password.as_ref().expect("password set");
+    assert_eq!(pw.value, "s3cret!");
+    assert!(
+        pw.temporary,
+        "temporary flag must round-trip the builder arg"
+    );
+}
+
+#[test]
+fn new_user_payload_with_password_permanent_default() {
+    // `temporary = false` is the "permanent credential" arm — password
+    // grants succeed without going through `UPDATE_PASSWORD`. The
+    // builder MUST honour the caller's boolean verbatim (no implicit
+    // policy override) so callers can construct either shape.
+    let payload = IdpNewUser::new("bob").with_password("hunter2", false);
+    let pw = payload.password.as_ref().expect("password set");
+    assert_eq!(pw.value, "hunter2");
+    assert!(!pw.temporary);
+}
+
+#[test]
+fn new_user_password_debug_redacts_value_but_preserves_temporary() {
+    // Debug is the leak channel we care about: structured logs and
+    // `tracing::debug!(?req)` will format the field via this impl. The
+    // value MUST NOT appear; the `temporary` flag is non-sensitive
+    // and stays visible for diagnostics.
+    let pw = NewUserPassword {
+        value: "super-secret-password".into(),
+        temporary: true,
+    };
+    let dbg = format!("{pw:?}");
+    assert!(
+        !dbg.contains("super-secret-password"),
+        "plaintext password leaked into Debug: `{dbg}`"
+    );
+    assert!(
+        dbg.contains("<redacted>"),
+        "Debug must mark the redaction explicitly: `{dbg}`"
+    );
+    assert!(
+        dbg.contains("temporary: true"),
+        "non-sensitive temporary flag must remain visible: `{dbg}`"
+    );
+}
+
+#[test]
+fn new_user_payload_debug_does_not_leak_password() {
+    // The IdpNewUser Debug impl is hand-rolled; the test pins the
+    // nested-redaction guarantee so a future field addition cannot
+    // accidentally fall back to `derive(Debug)` (which would still
+    // delegate to the redacted `NewUserPassword::Debug`, but only as
+    // long as that nested impl is wired through — easy to break).
+    let payload = IdpNewUser::new("alice")
+        .with_email("alice@example.test")
+        .with_password("super-secret-password", false);
+    let dbg = format!("{payload:?}");
+    assert!(
+        !dbg.contains("super-secret-password"),
+        "plaintext password leaked from IdpNewUser Debug: `{dbg}`"
+    );
+    assert!(
+        dbg.contains("<redacted>"),
+        "IdpNewUser Debug must mark the password redaction: `{dbg}`"
+    );
+    assert!(
+        dbg.contains("alice@example.test"),
+        "non-sensitive email must remain visible: `{dbg}`"
+    );
+}
+
+#[test]
+fn new_user_payload_serde_round_trips_full_payload() {
+    // Round-trip pins the wire shape: the field names plugins read
+    // (`first_name`, `last_name`, `password.value`, `password.temporary`)
+    // MUST stay literally these. A rename would break every IdP plugin
+    // that pattern-matches the JSON shape.
+    let payload = IdpNewUser::new("alice")
+        .with_email("alice@example.test")
+        .with_first_name("Alice")
+        .with_last_name("Anderson")
+        .with_password("s3cret!", true);
+    let json = serde_json::to_value(&payload).expect("serialise");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "username": "alice",
+            "email": "alice@example.test",
+            "first_name": "Alice",
+            "last_name": "Anderson",
+            "password": {"value": "s3cret!", "temporary": true},
+        })
+    );
+
+    let parsed: IdpNewUser = serde_json::from_value(json).expect("deserialise");
+    assert_eq!(parsed.first_name.as_deref(), Some("Alice"));
+    assert_eq!(parsed.last_name.as_deref(), Some("Anderson"));
+    let pw = parsed.password.as_ref().expect("password set");
+    assert_eq!(pw.value, "s3cret!");
+    assert!(pw.temporary);
+}
+
+#[test]
+fn new_user_password_deserialise_defaults_temporary_to_false() {
+    // `temporary` carries `#[serde(default)]` so callers can omit it
+    // for the common permanent-credential shape. Without the default
+    // the wire payload would have to carry `"temporary": false`
+    // explicitly, which would surprise integrations.
+    let parsed: NewUserPassword =
+        serde_json::from_value(serde_json::json!({"value": "hunter2"})).expect("deserialise");
+    assert_eq!(parsed.value, "hunter2");
+    assert!(
+        !parsed.temporary,
+        "missing `temporary` MUST default to false (permanent credential)"
+    );
+}
+
+#[test]
+fn idp_user_first_last_name_round_trip_through_serde() {
+    let id = Uuid::from_u128(0x00A1_10CE);
+    let user = IdpUser::new(id, "alice")
+        .with_first_name("Alice")
+        .with_last_name("Anderson");
+    assert_eq!(user.first_name.as_deref(), Some("Alice"));
+    assert_eq!(user.last_name.as_deref(), Some("Anderson"));
+
+    let json = serde_json::to_value(&user).expect("serialise");
+    assert_eq!(json["first_name"], "Alice");
+    assert_eq!(json["last_name"], "Anderson");
+
+    let back: IdpUser = serde_json::from_value(json).expect("deserialise");
+    assert_eq!(back.first_name.as_deref(), Some("Alice"));
+    assert_eq!(back.last_name.as_deref(), Some("Anderson"));
+}
+
+#[test]
+fn idp_user_absent_first_last_name_drops_keys_on_wire() {
+    let user = IdpUser::new(Uuid::from_u128(0x00A1_10CE), "alice");
+    let json = serde_json::to_value(&user).expect("serialise");
+    let map = json.as_object().expect("object");
+    assert!(!map.contains_key("first_name"));
+    assert!(!map.contains_key("last_name"));
+}
+
+#[test]
+fn idp_user_filter_field_set_is_pinned() {
+    use modkit_odata::filter::FilterField;
+    let names: Vec<&'static str> = IdpUserFilterField::FIELDS
+        .iter()
+        .map(modkit_odata::filter::FilterField::name)
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "id",
+            "username",
+            "email",
+            "display_name",
+            "first_name",
+            "last_name",
+        ],
+        "IdpUserFilterField columns AND their declaration order must stay locked - a rename, removal, addition, or reorder here is breaking",
+    );
+}
+
+#[test]
+fn idp_list_users_request_carries_typed_filter_and_order() {
+    use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+    use modkit_odata::{ODataOrderBy, OrderKey, SortDir};
+
+    let ctx = IdpTenantContext::new(
+        Uuid::from_u128(1),
+        "acme",
+        gts::GtsSchemaId::new("gts.cf.core.am.tenant_type.v1~cf.core.am.customer.v1~"),
+        None,
+    );
+    let pagination = IdpUserPagination::default();
+    let filter = FilterNode::binary(
+        IdpUserFilterField::Username,
+        FilterOp::Eq,
+        ODataValue::String("alice".into()),
+    );
+    let order = ODataOrderBy(vec![OrderKey {
+        field: "username".into(),
+        dir: SortDir::Asc,
+    }]);
+
+    let req = IdpListUsersRequest::new(ctx, pagination)
+        .with_filter(filter)
+        .with_order(order);
+
+    assert!(matches!(
+        req.filter,
+        Some(FilterNode::Binary {
+            field: IdpUserFilterField::Username,
+            op: FilterOp::Eq,
+            ..
+        })
+    ));
+    assert_eq!(req.order.as_ref().expect("order set").0.len(), 1);
+}
+
+#[test]
+fn idp_list_users_request_new_defaults_filter_and_order_to_none() {
+    let ctx = IdpTenantContext::new(
+        Uuid::from_u128(2),
+        "acme",
+        gts::GtsSchemaId::new("gts.cf.core.am.tenant_type.v1~cf.core.am.customer.v1~"),
+        None,
+    );
+    let req = IdpListUsersRequest::new(ctx, IdpUserPagination::default());
+    assert!(req.filter.is_none(), "new() must leave filter unset");
+    assert!(req.order.is_none(), "new() must leave order unset");
+}
+
+#[test]
+fn list_users_query_with_id_helper_builds_eq_filter_and_pins_top_one() {
+    use modkit_odata::filter::ODataValue;
+    use modkit_odata::filter::{FilterNode, FilterOp};
+
+    let target = Uuid::from_u128(0xCAFE);
+    let query = ListUsersQuery::with_id(target);
+    assert_eq!(query.pagination.top(), 1);
+    assert!(query.pagination.cursor().is_none());
+    let filter = query.filter.as_ref().expect("filter present");
+    match filter {
+        FilterNode::Binary { field, op, value } => {
+            assert!(matches!(field, IdpUserFilterField::Id));
+            assert!(matches!(op, FilterOp::Eq));
+            match value {
+                ODataValue::Uuid(u) => assert_eq!(*u, target),
+                other => panic!("expected Uuid value, got {other:?}"),
+            }
+        }
+        other => panic!("expected Binary node, got {other:?}"),
+    }
+    assert!(query.order.is_none(), "with_id MUST NOT preset an order");
+}
+
+#[test]
+fn list_users_query_default_carries_no_filter_or_order() {
+    let q = ListUsersQuery::default();
+    assert!(q.filter.is_none());
+    assert!(q.order.is_none());
+}
+
+#[test]
+fn list_users_query_with_filter_and_order_builders_round_trip() {
+    use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+    use modkit_odata::{ODataOrderBy, OrderKey, SortDir};
+
+    let filter = FilterNode::binary(
+        IdpUserFilterField::Email,
+        FilterOp::Eq,
+        ODataValue::String("alice@example.test".into()),
+    );
+    let order = ODataOrderBy(vec![OrderKey {
+        field: "username".into(),
+        dir: SortDir::Asc,
+    }]);
+    let q = ListUsersQuery::new(IdpUserPagination::default())
+        .with_filter(filter)
+        .with_order(order);
+    assert!(matches!(
+        q.filter,
+        Some(FilterNode::Binary {
+            field: IdpUserFilterField::Email,
+            op: FilterOp::Eq,
+            ..
+        })
+    ));
+    assert_eq!(q.order.as_ref().expect("order set").0.len(), 1);
 }

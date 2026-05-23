@@ -14,7 +14,7 @@
 //!   `Ok(())` from the service (plugins map vendor "user does not
 //!   exist" responses to `Ok(())` themselves); `Unavailable` and
 //!   `UnsupportedOperation` pass through unchanged.
-//! * `list_users` filter: `?user_id=<id>` returns 0 or 1 results
+//! * `list_users` filter: `$filter=id eq <uuid>` returns 0 or 1 results
 //!   matching the authoritative existence signal contract.
 
 #![allow(
@@ -26,7 +26,9 @@
 
 use std::sync::Arc;
 
-use account_management_sdk::{IdpNewUser, IdpUser, IdpUserPagination, ListUsersQuery};
+use account_management_sdk::{
+    IdpNewUser, IdpUser, IdpUserFilterField, IdpUserPagination, ListUsersQuery,
+};
 use modkit_security::SecurityContext;
 use serde_json::json;
 use time::OffsetDateTime;
@@ -198,14 +200,6 @@ fn payload(username: &str) -> IdpNewUser {
 
 fn pagination() -> IdpUserPagination {
     IdpUserPagination::new(50, None).expect("top=50 is valid")
-}
-
-/// Pagination shape required by `list_users` when `user_id_filter`
-/// is set: AM-side validation pins `top=1, cursor=None` so the
-/// filtered lookup matches the authoritative-existence-check
-/// semantics documented on the SDK.
-fn filter_pagination() -> IdpUserPagination {
-    IdpUserPagination::new(1, None).expect("top=1 is valid")
 }
 
 // ---- create_user -----------------------------------------------
@@ -606,7 +600,7 @@ async fn list_users_happy_path_returns_page_through_idp() {
 }
 
 #[tokio::test]
-async fn list_users_user_id_filter_returns_one_or_empty() {
+async fn list_users_id_eq_filter_returns_one_or_empty() {
     let tenants = Arc::new(FakeTenantRepo::new());
     let tenant_id = Uuid::from_u128(0x51);
     seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
@@ -620,23 +614,15 @@ async fn list_users_user_id_filter_returns_one_or_empty() {
     let svc = make_service(tenants, idp);
 
     let hit = svc
-        .list_users(
-            &ctx(),
-            tenant_id,
-            ListUsersQuery::new(filter_pagination()).with_user_id_filter(target),
-        )
+        .list_users(&ctx(), tenant_id, ListUsersQuery::with_id(target))
         .await
         .expect("filter by existing user id");
-    assert_eq!(hit.items.len(), 1, "single-user filter returns 1 row");
+    assert_eq!(hit.items.len(), 1, "single-user id eq filter returns 1 row");
     assert_eq!(hit.items[0].id, target);
 
     let absent = Uuid::from_u128(0xDEAD);
     let miss = svc
-        .list_users(
-            &ctx(),
-            tenant_id,
-            ListUsersQuery::new(filter_pagination()).with_user_id_filter(absent),
-        )
+        .list_users(&ctx(), tenant_id, ListUsersQuery::with_id(absent))
         .await
         .expect("filter by absent user id is success-with-empty-list");
     assert!(
@@ -754,15 +740,17 @@ async fn get_user_rejects_unknown_tenant_no_idp_call() {
 }
 
 #[tokio::test]
-async fn list_users_with_user_id_filter_and_cursor_rejects_validation_no_idp_call() {
-    // The `user_id_filter = Some(_)` call is an authoritative
-    // existence check (see SDK doc on `IdpListUsersRequest::user_id_filter`).
+async fn list_users_with_id_eq_filter_and_cursor_rejects_validation_no_idp_call() {
+    // The `$filter = id eq <uuid>` call is an authoritative
+    // existence check (see SDK doc on `ListUsersQuery::with_id`).
     // Forwarding a continuation cursor would let the provider step
     // past the matching row and turn the existence check into a
     // false negative (downstream feature-user-groups would think the
     // user does not exist). The service guard rejects this
     // combination at the AM boundary so the misuse surfaces as HTTP
     // 400 instead of silent miscorrelation.
+    use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+
     let tenants = Arc::new(FakeTenantRepo::new());
     let tenant_id = Uuid::from_u128(0x55);
     seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
@@ -772,14 +760,20 @@ async fn list_users_with_user_id_filter_and_cursor_rejects_validation_no_idp_cal
     let user_id = Uuid::from_u128(0xA1);
     let with_cursor = IdpUserPagination::new(1, Some("opaque-continuation".to_owned()))
         .expect("top=1 + cursor is structurally valid pagination");
+    // Build the typed filter directly (NOT via `ListUsersQuery::with_id`)
+    // so we preserve the cursor under test.
     let err = svc
         .list_users(
             &ctx(),
             tenant_id,
-            ListUsersQuery::new(with_cursor).with_user_id_filter(user_id),
+            ListUsersQuery::new(with_cursor).with_filter(FilterNode::binary(
+                IdpUserFilterField::Id,
+                FilterOp::Eq,
+                ODataValue::Uuid(user_id),
+            )),
         )
         .await
-        .expect_err("user_id_filter + cursor must reject at the AM boundary");
+        .expect_err("id eq filter + cursor must reject at the AM boundary");
     match err {
         DomainError::Validation { detail } => {
             assert!(
@@ -797,9 +791,10 @@ async fn list_users_with_user_id_filter_and_cursor_rejects_validation_no_idp_cal
 }
 
 #[tokio::test]
-async fn list_users_with_user_id_filter_and_no_cursor_passes_through() {
+async fn list_users_with_id_eq_filter_and_no_cursor_passes_through() {
     // Happy-path counterpart to the rejection test: `cursor = None`
-    // is the valid combo with `user_id_filter` and must reach the IdP.
+    // is the valid combo with an `id eq <uuid>` filter and must reach
+    // the IdP.
     let tenants = Arc::new(FakeTenantRepo::new());
     let tenant_id = Uuid::from_u128(0x56);
     seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
@@ -808,23 +803,21 @@ async fn list_users_with_user_id_filter_and_no_cursor_passes_through() {
 
     let user_id = Uuid::from_u128(0xA2);
     let _ = svc
-        .list_users(
-            &ctx(),
-            tenant_id,
-            ListUsersQuery::new(filter_pagination()).with_user_id_filter(user_id),
-        )
+        .list_users(&ctx(), tenant_id, ListUsersQuery::with_id(user_id))
         .await
-        .expect("user_id_filter + cursor=None must reach the IdP");
+        .expect("id eq filter + cursor=None must reach the IdP");
     assert_eq!(idp.list_call_count(), 1);
 }
 
 #[tokio::test]
-async fn list_users_with_user_id_filter_and_top_gt_one_rejects_validation_no_idp_call() {
-    // Existence-check semantics require `top = 1` when a filter is
-    // set; an oversized `top` would forward to a vendor that ignores
-    // the filter, returning up to `top` unrelated rows, and surface
-    // the caller-side bug as `Internal` (HTTP 500) downstream
-    // instead of catching it at the AM seam.
+async fn list_users_with_id_eq_filter_and_top_gt_one_rejects_validation_no_idp_call() {
+    // Existence-check semantics require `top = 1` when an
+    // `id eq <uuid>` filter is set; an oversized `top` would forward
+    // to a vendor that ignores the filter, returning up to `top`
+    // unrelated rows, and surface the caller-side bug as `Internal`
+    // (HTTP 500) downstream instead of catching it at the AM seam.
+    use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+
     let tenants = Arc::new(FakeTenantRepo::new());
     let tenant_id = Uuid::from_u128(0x57);
     seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
@@ -832,14 +825,20 @@ async fn list_users_with_user_id_filter_and_top_gt_one_rejects_validation_no_idp
     let svc = make_service(tenants, idp.clone());
 
     let user_id = Uuid::from_u128(0xA3);
+    // Build the typed filter directly (NOT via `ListUsersQuery::with_id`)
+    // so we preserve top>1 under test.
     let err = svc
         .list_users(
             &ctx(),
             tenant_id,
-            ListUsersQuery::new(pagination()).with_user_id_filter(user_id),
+            ListUsersQuery::new(pagination()).with_filter(FilterNode::binary(
+                IdpUserFilterField::Id,
+                FilterOp::Eq,
+                ODataValue::Uuid(user_id),
+            )),
         )
         .await
-        .expect_err("user_id_filter + top>1 must reject at the AM boundary");
+        .expect_err("id eq filter + top>1 must reject at the AM boundary");
     match err {
         DomainError::Validation { detail } => assert!(
             detail.contains("top MUST be 1"),
@@ -848,6 +847,105 @@ async fn list_users_with_user_id_filter_and_top_gt_one_rejects_validation_no_idp
         other => panic!("expected Validation, got {other:?}"),
     }
     assert_eq!(idp.list_call_count(), 0, "must not reach the IdP");
+}
+
+#[tokio::test]
+async fn list_users_with_username_eq_filter_reaches_plugin_with_filter_node() {
+    use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x60);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let alice_id = Uuid::from_u128(0xA1);
+    idp.set_list_items(vec![
+        IdpUser::new(alice_id, "alice"),
+        IdpUser::new(Uuid::from_u128(0xA2), "bob"),
+    ]);
+    let svc = make_service(tenants, idp.clone());
+
+    let q = ListUsersQuery::new(pagination()).with_filter(FilterNode::binary(
+        IdpUserFilterField::Username,
+        FilterOp::Eq,
+        ODataValue::String("alice".into()),
+    ));
+    let page = svc.list_users(&ctx(), tenant_id, q).await.expect("ok");
+    assert_eq!(
+        page.items.len(),
+        1,
+        "fake filter walker must apply username eq"
+    );
+    assert_eq!(page.items[0].id, alice_id);
+
+    // The plugin SPI must observe the typed filter exactly as we built it.
+    let recorded = idp.list_calls_snapshot();
+    let last = recorded.last().expect("plugin was invoked");
+    assert!(matches!(
+        last.filter.as_ref(),
+        Some(FilterNode::Binary {
+            field: IdpUserFilterField::Username,
+            op: FilterOp::Eq,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn list_users_default_order_is_username_asc_id_asc_after_tiebreaker_injection() {
+    use modkit_odata::SortDir;
+
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x61);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let svc = make_service(tenants, idp.clone());
+
+    svc.list_users(&ctx(), tenant_id, ListUsersQuery::new(pagination()))
+        .await
+        .expect("default-order call must reach the plugin");
+
+    let recorded = idp.list_calls_snapshot();
+    let last = recorded.last().expect("plugin was invoked");
+    let order = last
+        .order
+        .as_ref()
+        .expect("default order MUST be forwarded");
+    // `OrderKey` does not derive `PartialEq`, so we project to a
+    // comparable tuple shape before asserting.
+    let actual: Vec<(&str, SortDir)> = order.0.iter().map(|k| (k.field.as_str(), k.dir)).collect();
+    assert_eq!(
+        actual,
+        vec![("username", SortDir::Asc), ("id", SortDir::Asc)],
+        "service MUST inject default `username ASC, id ASC` when caller passes no order"
+    );
+}
+
+#[tokio::test]
+async fn list_users_caller_order_gets_id_tiebreaker_appended() {
+    use modkit_odata::{ODataOrderBy, OrderKey, SortDir};
+
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x62);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let svc = make_service(tenants, idp.clone());
+
+    let caller_order = ODataOrderBy(vec![OrderKey {
+        field: "last_name".into(),
+        dir: SortDir::Asc,
+    }]);
+    let q = ListUsersQuery::new(pagination()).with_order(caller_order);
+    svc.list_users(&ctx(), tenant_id, q).await.expect("ok");
+
+    let recorded = idp.list_calls_snapshot();
+    let last = recorded.last().expect("plugin was invoked");
+    let order = last.order.as_ref().expect("order forwarded");
+    let actual: Vec<(&str, SortDir)> = order.0.iter().map(|k| (k.field.as_str(), k.dir)).collect();
+    assert_eq!(
+        actual,
+        vec![("last_name", SortDir::Asc), ("id", SortDir::Asc)],
+        "service MUST append `id ASC` even when caller supplies $orderby"
+    );
 }
 
 #[tokio::test]

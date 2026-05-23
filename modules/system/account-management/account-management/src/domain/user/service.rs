@@ -45,14 +45,15 @@ use std::sync::Arc;
 use account_management_sdk::gts::{USER_GROUP_RG_TYPE_CODE, USER_RG_TYPE_CODE};
 use account_management_sdk::{
     IdpDeprovisionUserRequest, IdpListUsersRequest, IdpNewUser, IdpPluginClient,
-    IdpProvisionUserRequest, IdpTenantContext, IdpUser, IdpUserPagination, ListUsersQuery,
+    IdpProvisionUserRequest, IdpTenantContext, IdpUser, IdpUserFilterField, ListUsersQuery,
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use authz_resolver_sdk::pep::ResourceType;
 use modkit_macros::domain_model;
 use modkit_odata::Page;
 use modkit_odata::ast::{CompareOperator, Expr, Value};
-use modkit_odata::{CursorV1, ODataQuery};
+use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+use modkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir};
 use modkit_security::AccessScope;
 use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::{ResourceGroupClient, ResourceGroupError};
@@ -151,8 +152,9 @@ pub struct UserService {
     /// always sets it.
     rg_client: Option<Arc<dyn ResourceGroupClient + Send + Sync>>,
     /// Per-deployment listing cap. Defaults to
-    /// [`IdpUserPagination::MAX_TOP`]; production wiring overrides
-    /// via [`Self::with_listing_max_top`] from `cfg.listing.max_top`.
+    /// [`account_management_sdk::IdpUserPagination::MAX_TOP`];
+    /// production wiring overrides via [`Self::with_listing_max_top`]
+    /// from `cfg.listing.max_top`.
     max_listing_top: u32,
 }
 
@@ -177,6 +179,23 @@ const RG_CLEANUP_PAGE_SIZE: u64 = 100;
     reason = "from_mins is unstable on workspace MSRV; keep from_secs"
 )]
 const RG_CLEANUP_BUDGET: Duration = Duration::from_secs(60);
+
+/// Returns `Some(uuid)` when `filter` is exactly a top-level binary
+/// `IdpUserFilterField::Id eq ODataValue::Uuid(uuid)` clause —
+/// the canonical "authoritative single-user existence check" shape
+/// produced by [`ListUsersQuery::with_id`]. Used by `list_users` to
+/// preserve the historical `user_id_filter` defensive guard against
+/// plugins that silently ignore the filter and return unrelated rows.
+fn extract_top_level_id_eq(filter: Option<&FilterNode<IdpUserFilterField>>) -> Option<Uuid> {
+    match filter? {
+        FilterNode::Binary {
+            field: IdpUserFilterField::Id,
+            op: FilterOp::Eq,
+            value: ODataValue::Uuid(u),
+        } => Some(*u),
+        _ => None,
+    }
+}
 
 impl UserService {
     /// Construct a fully-wired service.
@@ -409,7 +428,7 @@ impl UserService {
                 // any downstream membership write keyed on it; a nil
                 // value would coalesce distinct users into one audit
                 // / membership bucket the same way a nil
-                // `requested_by` would. Mirrors the `user_id_filter`
+                // `requested_by` would. Mirrors the `id eq <uuid>`
                 // contract-drift gate further down in `list_users`.
                 if projection.id.is_nil() {
                     tracing::warn!(
@@ -596,11 +615,12 @@ impl UserService {
 
     /// Fetch a single user by id from `tenant_id` via the configured
     /// `IdP` plugin. Thin wrapper over [`Self::list_users`] with
-    /// `user_id_filter = Some(user_id)`, `top = 1`, `cursor = None`;
-    /// the AM-level pagination disciplines documented on `list_users`
-    /// (cursor MUST be absent, top MUST be 1 when `user_id_filter` is
-    /// set) make a one-shot filtered lookup the authoritative
-    /// existence check for a specific user.
+    /// `$filter = id eq <user_id>`, `top = 1`, `cursor = None`
+    /// (constructed via [`ListUsersQuery::with_id`]); the AM-level
+    /// pagination disciplines documented on `list_users` (cursor MUST
+    /// be absent, top MUST be 1 when filtering by `id eq`) make a
+    /// one-shot filtered lookup the authoritative existence check for
+    /// a specific user.
     ///
     /// User profile mutation is intentionally **not** exposed by AM —
     /// `email` / `display_name` / `username` live in the `IdP` and
@@ -623,20 +643,12 @@ impl UserService {
         tenant_id: Uuid,
         user_id: Uuid,
     ) -> Result<IdpUser, DomainError> {
-        // `IdpUserPagination::new(1, None)` is statically valid (`top=1`
-        // is `>= 1` and `<= MAX_TOP`, no cursor to validate), so the
-        // `Err` arm is unreachable. Route the impossible failure
-        // through `Internal` rather than `expect()` to keep the
-        // workspace clippy `expect_used` lint clean and surface any
-        // future regression (e.g. a stricter constructor contract
-        // that rejects `top=1`) as a structured error.
-        let pagination = IdpUserPagination::new(1, None).map_err(|e| DomainError::Internal {
-            diagnostic: format!(
-                "get_user: failed to build single-row pagination (top=1, no cursor): {e}"
-            ),
-            cause: None,
-        })?;
-        let query = ListUsersQuery::new(pagination).with_user_id_filter(user_id);
+        // `ListUsersQuery::with_id` bakes in the canonical
+        // existence-check shape (`$filter = id eq <user_id>`,
+        // `top = 1`, `cursor = None`) via
+        // `IdpUserPagination::for_existence_check()` which is `const`
+        // and infallible — no error mapping needed.
+        let query = ListUsersQuery::with_id(user_id);
         let page = self.list_users(ctx, tenant_id, query).await?;
         page.items
             .into_iter()
@@ -648,7 +660,8 @@ impl UserService {
     }
 
     /// List users in `tenant_id` via the configured `IdP` plugin.
-    /// `user_id_filter = Some(_)` is the authoritative existence
+    /// A top-level `$filter = id eq <uuid>` clause (the shape produced
+    /// by [`ListUsersQuery::with_id`]) is the authoritative existence
     /// signal consumed by sibling features (e.g. `feature-user-groups`).
     ///
     /// Implements
@@ -657,9 +670,9 @@ impl UserService {
     /// # Errors
     ///
     /// * [`DomainError::Validation`] -- pagination shape: `cursor`
-    ///   present or `top != 1` combined with `user_id_filter` (the
-    ///   filtered shape is an authoritative existence check, not a
-    ///   paginated query).
+    ///   present or `top != 1` combined with the `id eq <uuid>` filter
+    ///   shape (the filtered point-lookup is an authoritative existence
+    ///   check, not a paginated query).
     /// * [`DomainError::NotFound`] -- `tenant_id` does not resolve.
     /// * [`DomainError::Validation`] -- tenant exists but is not
     ///   [`TenantStatus::Active`].
@@ -672,8 +685,8 @@ impl UserService {
     ///   the operation.
     /// * [`DomainError::Validation`] -- provider rejected the request.
     /// * [`DomainError::Internal`] -- provider returned a row that
-    ///   does not match `user_id_filter` (contract-drift guard) or
-    ///   an unknown SDK failure variant.
+    ///   does not match the `id eq <uuid>` filter (contract-drift
+    ///   guard) or an unknown SDK failure variant.
     // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-list-users:p1:inst-flow-luser-service
     pub async fn list_users(
         &self,
@@ -683,14 +696,16 @@ impl UserService {
     ) -> Result<Page<IdpUser>, DomainError> {
         let ListUsersQuery {
             pagination,
-            user_id_filter,
+            filter,
+            order,
             ..
         } = query;
+        let existence_check_id: Option<Uuid> = extract_top_level_id_eq(filter.as_ref());
         // PEP gate FIRST. The `LIST` action is used for both the
         // raw list and the `get_user` existence-check shape
-        // (`user_id_filter = Some(_)`) so the same policy decision
-        // governs both surfaces. The compiled scope clamps the
-        // tenant-existence guard below.
+        // (top-level `$filter = id eq <uuid>` AST clause) so the same
+        // policy decision governs both surfaces. The compiled scope
+        // clamps the tenant-existence guard below.
         let scope = self.authorize(ctx, pep::actions::LIST, tenant_id).await?;
 
         // Tenant existence + status guard runs after PEP so a request
@@ -703,41 +718,54 @@ impl UserService {
         // @cpt-end:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-luser
         // @cpt-end:cpt-cf-account-management-flow-idp-user-operations-contract-list-users:p1:inst-flow-luser-resolve-tenant
 
-        // When user_id_filter is set the call is an existence check (empty page =
-        // authoritative absent). Reject cursor/top>1: a continuation cursor turns
-        // existence into a false negative; top>1 lets a vendor that ignores the
-        // filter return unrelated rows and surface a caller bug as Internal 500
-        // instead of Validation 400.
-        if user_id_filter.is_some() {
+        // When the filter is exactly a top-level `id eq <uuid>` clause
+        // the call is an existence check (empty page = authoritative
+        // absent). Reject cursor/top>1: a continuation cursor turns
+        // existence into a false negative; top>1 lets a vendor that
+        // ignores the filter return unrelated rows and surface a caller
+        // bug as Internal 500 instead of Validation 400.
+        if existence_check_id.is_some() {
             if pagination.cursor().is_some() {
                 return Err(DomainError::Validation {
-                    detail: "list_users: cursor MUST be absent when user_id_filter is set \
-                        (filtered lookup is an authoritative existence check, not a paginated \
-                        query)"
+                    detail: "list_users: cursor MUST be absent when filtering by `id eq` \
+                        (filtered point-lookup is an authoritative existence check, not \
+                        paginated)"
                         .to_owned(),
                 });
             }
             if pagination.top() != 1 {
                 return Err(DomainError::Validation {
-                    detail: "list_users: top MUST be 1 when user_id_filter is set (filtered \
-                        lookup returns at most one row)"
+                    detail: "list_users: top MUST be 1 when filtering by `id eq` (filtered \
+                        point-lookup is an authoritative existence check, not paginated)"
                         .to_owned(),
                 });
             }
         }
+
+        // Inject default order + `id ASC` tiebreaker before SPI
+        // dispatch. Plugins receive a deterministic ordering even when
+        // the caller supplied none, and any caller-supplied order gets
+        // a stable tiebreaker so cursor continuations are well-defined.
+        let effective_order = order
+            .unwrap_or_else(|| {
+                ODataOrderBy(vec![OrderKey {
+                    field: "username".into(),
+                    dir: SortDir::Asc,
+                }])
+            })
+            .ensure_tiebreaker("id", SortDir::Asc);
 
         // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-list-users:p1:inst-flow-luser-invoke-contract
         // @cpt-begin:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-package-request-luser
         // Convert internal `TenantContext` → SDK `IdpTenantContext` at
         // the plugin-SPI boundary.
         let req = {
-            let base =
+            let mut base =
                 IdpListUsersRequest::new(IdpTenantContext::from(&tenant_context), pagination);
-            if let Some(uid) = user_id_filter {
-                base.with_user_id_filter(uid)
-            } else {
-                base
+            if let Some(f) = filter {
+                base = base.with_filter(f);
             }
+            base.with_order(effective_order)
         };
         // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-package-request-luser
         // @cpt-begin:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-invoke-luser
@@ -750,11 +778,11 @@ impl UserService {
             // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-list-users:p1:inst-flow-luser-project
             // @cpt-begin:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-success-return-luser
             Ok(page) => {
-                // Provider contract guard: surface user_id_filter drift as
-                // Internal 500 — downstream existence checks and RBAC mapping
-                // treat this page as authoritative, so silent drift is
-                // security-relevant.
-                if let Some(filter_id) = user_id_filter
+                // Provider contract guard: surface `id eq` filter drift
+                // as Internal 500 — downstream existence checks and
+                // RBAC mapping treat this page as authoritative, so
+                // silent drift is security-relevant.
+                if let Some(filter_id) = existence_check_id
                     && (page.items.len() > 1 || page.items.iter().any(|u| u.id != filter_id))
                 {
                     let bad_ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
@@ -764,12 +792,13 @@ impl UserService {
                         requested_user_id = %filter_id,
                         returned_ids = ?bad_ids,
                         count = page.items.len(),
-                        "list_users: provider violated user_id_filter contract"
+                        "list_users: provider violated `$filter=id eq <uuid>` contract"
                     );
                     return Err(DomainError::Internal {
                         diagnostic: format!(
-                            "list_users: provider returned {} item(s) for user_id_filter={filter_id}; \
-                             expected at most 1 item with matching id",
+                            "list_users: provider returned {} item(s) for \
+                             `$filter=id eq {filter_id}`; expected at most 1 \
+                             item with matching id",
                             page.items.len()
                         ),
                         cause: None,

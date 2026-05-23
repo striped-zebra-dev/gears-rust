@@ -157,11 +157,11 @@ async fn list_users_returns_200_with_page() {
 
 #[tokio::test]
 async fn list_users_filtered_by_user_id_returns_200() {
-    // Per the handler's `pagination_for(query)`: when `?user_id=X` is
-    // supplied the handler pins `top=1, cursor=None` BEFORE calling
-    // the service. With the stateful fake the unknown-uid filter
-    // returns an empty page (authoritative absent signal per FEATURE
-    // §5.5 DoD); the populated-uid filter is exercised by
+    // Per the OData lowering in `lower_odata_to_list_users_query`:
+    // `$filter=id eq <uuid>` is the canonical point-lookup / existence-
+    // check shape; with `$top=1` the handler emits an empty page for an
+    // absent id (authoritative absent signal per FEATURE §5.5 DoD).
+    // The populated-uid filter is exercised by
     // `user_lifecycle_round_trip_against_stateful_fake` below.
     let h = setup_sqlite().await.expect("sqlite");
     let root = Uuid::new_v4();
@@ -171,7 +171,10 @@ async fn list_users_filtered_by_user_id_returns_200() {
     let probe = Uuid::new_v4();
     let req = json_request(
         "GET",
-        &format!("/account-management/v1/tenants/{root}/users?user_id={probe}"),
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=id%20eq%20{probe}&limit=1"
+        ),
         None,
         ctx_for(root),
     );
@@ -228,10 +231,13 @@ async fn user_lifecycle_round_trip_against_stateful_fake() {
         .and_then(|s| Uuid::parse_str(s).ok())
         .expect("alice id");
 
-    // GET /users?user_id=<alice> — point-lookup returns exactly one.
+    // GET /users?$filter=id eq <alice>&$top=1 — point-lookup returns exactly one.
     let req = json_request(
         "GET",
-        &format!("/account-management/v1/tenants/{root}/users?user_id={alice_id}"),
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=id%20eq%20{alice_id}&limit=1"
+        ),
         None,
         ctx_for(root),
     );
@@ -252,10 +258,13 @@ async fn user_lifecycle_round_trip_against_stateful_fake() {
     let resp = router.clone().oneshot(req).await.expect("router");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    // GET /users?user_id=<alice> — empty after delete.
+    // GET /users?$filter=id eq <alice>&$top=1 — empty after delete.
     let req = json_request(
         "GET",
-        &format!("/account-management/v1/tenants/{root}/users?user_id={alice_id}"),
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=id%20eq%20{alice_id}&limit=1"
+        ),
         None,
         ctx_for(root),
     );
@@ -302,4 +311,225 @@ async fn list_users_for_unknown_tenant_returns_404() {
     let resp = router.oneshot(req).await.expect("router");
     let (status, _body) = response_problem(resp).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ─── OData $filter / $orderby HTTP shape ─────────────────────────────
+
+#[tokio::test]
+async fn list_users_http_with_username_eq_filter_returns_200_and_invokes_plugin() {
+    // The fake-side filter walker is id-eq-only; we don't assert on the
+    // returned items here. The test pins the wire contract:
+    // `?$filter=username eq 'alice'` parses, lowers to typed FilterNode,
+    // and reaches the plugin (200, well-formed Page envelope).
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=username%20eq%20%27alice%27"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_body(resp).await;
+    assert!(
+        body.get("items").is_some(),
+        "response carries items[]: {body}"
+    );
+}
+
+#[tokio::test]
+async fn list_users_http_with_unknown_filter_field_returns_400() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=foo%20eq%20%27x%27"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "unknown filter field MUST surface as 400"
+    );
+    let body = response_body(resp).await;
+    // The canonical Problem envelope surfaces the bad-field detail in
+    // `detail` and/or in `context.field_violations[].description`. The
+    // current shape carries the "$filter: Unknown field: foo" string
+    // inside the field-violation description; accept either location.
+    let detail = body["detail"].as_str().unwrap_or("");
+    let violations = body
+        .get("context")
+        .and_then(|c| c.get("field_violations"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let any_violation_mentions = violations.iter().any(|v| {
+        let desc = v.get("description").and_then(|d| d.as_str()).unwrap_or("");
+        desc.contains("foo") || desc.to_lowercase().contains("filter")
+    });
+    assert!(
+        detail.contains("foo")
+            || detail.to_lowercase().contains("filter")
+            || any_violation_mentions,
+        "Problem body should mention the bad field or $filter: {body}"
+    );
+}
+
+#[tokio::test]
+async fn list_users_http_with_substring_op_on_uuid_field_returns_400() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    // `startswith(id, '11')` — id is kind=Uuid, substring ops only valid on String fields.
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=startswith%28id%2C%2711%27%29"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "substring op on Uuid field MUST surface as 400"
+    );
+}
+
+#[tokio::test]
+async fn list_users_http_with_string_value_on_uuid_field_returns_400() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    // `?$filter=id eq 'abc'` — String value where Uuid is required.
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=id%20eq%20%27abc%27"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "string value on Uuid field MUST surface as 400"
+    );
+}
+
+#[tokio::test]
+async fn list_users_http_with_contains_first_name_returns_200() {
+    // Wire-shape pin: case-insensitive `contains(first_name, 'ali')`
+    // parses, lowers, and reaches the plugin. Actual case-insensitive
+    // matching semantics are unit-tested in static-idp; the AM
+    // integration FakeIdpPlugin is id-eq-only.
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=contains%28first_name%2C%27ali%27%29"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn list_users_http_with_orderby_last_name_asc_returns_200() {
+    // Wire-shape pin for $orderby. The fake plugin does not honour the
+    // forwarded order beyond what its own list ordering produces; the
+    // 200 + well-formed envelope confirms the route + extractor +
+    // lowering pipeline.
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24orderby=last_name%20asc"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn list_users_http_with_unknown_orderby_field_returns_400() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24orderby=foo%20asc"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "unknown $orderby field MUST surface as 400"
+    );
+}
+
+#[tokio::test]
+async fn list_users_http_default_no_filter_no_orderby_returns_200() {
+    // Plain `GET /users` (no $filter, no $orderby, no limit, no cursor)
+    // must succeed and return a Page envelope. Regression guard against
+    // a future extractor refactor that accidentally requires query params.
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    let req = json_request(
+        "GET",
+        &format!("/account-management/v1/tenants/{root}/users"),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_body(resp).await;
+    assert!(body.get("items").is_some());
 }

@@ -278,12 +278,14 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     ) -> Result<IdpUser, AccountManagementError>;
 
     /// Fetch a single user by id from `tenant_id` via the configured
-    /// `IdP` plugin. Thin wrapper over [`Self::list_users`] with
-    /// `user_id_filter = Some(user_id)`, `top = 1`, `cursor = None`.
-    /// Returns `NotFound` when the user is not present in the
-    /// plugin's response (empty page is success on `list_users`; the
-    /// `get_user` shape collapses it to `NotFound` for REST semantics
-    /// — `GET /users/{id}` is either 200 or 404).
+    /// `IdP` plugin. Thin wrapper over [`Self::list_users`] with the
+    /// canonical existence-check shape — `$filter = id eq <user_id>`,
+    /// `top = 1`, `cursor = None` — constructed via
+    /// [`crate::ListUsersQuery::with_id`]. Returns `NotFound` when the
+    /// user is not present in the plugin's response (empty page is
+    /// success on `list_users`; the `get_user` shape collapses it to
+    /// `NotFound` for REST semantics — `GET /users/{id}` is either 200
+    /// or 404).
     ///
     /// Profile-mutation (`email` / `display_name` / `username`) is
     /// intentionally not exposed by AM: those attributes live in the
@@ -302,12 +304,12 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     ) -> Result<IdpUser, AccountManagementError>;
 
     /// List users in `tenant_id` via the configured `IdP` plugin.
-    /// `user_id_filter = Some(_)` is the authoritative existence
-    /// signal consumed by sibling features (e.g. user-groups
-    /// membership writes): the empty page is success-with-absence,
-    /// NOT `NotFound`.
+    /// `$filter = id eq <uuid>` (via [`crate::ListUsersQuery::with_id`])
+    /// is the authoritative existence signal consumed by sibling
+    /// features (e.g. user-groups membership writes): the empty page
+    /// is success-with-absence, NOT `NotFound`.
     ///
-    /// When `user_id_filter` is set the AM seam enforces
+    /// When the filter has that shape the AM seam enforces
     /// `pagination.top == 1` and `pagination.cursor == None` so the
     /// filtered lookup keeps single-row existence semantics; either
     /// violation surfaces as `InvalidArgument`.

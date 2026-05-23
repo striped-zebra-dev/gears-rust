@@ -115,6 +115,11 @@ impl ResolvedTenantMetadataDto {
 /// Mirrors `UserCreateRequest`. Trim/structural validation lives in
 /// `UserService::create_user` (via GTS schema) — this DTO only pins the
 /// wire shape.
+///
+/// `password` is the atomic initial credential delivered together with the
+/// user create request: when present, the `IdP` plugin sets it during creation
+/// so the caller can immediately password-grant. Omit it to create the user
+/// without a credential (admin-reset or invite-link flow).
 #[derive(Debug, Clone)]
 #[modkit_macros::api_dto(request)]
 pub struct UserCreateRequestDto {
@@ -123,6 +128,31 @@ pub struct UserCreateRequestDto {
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<NewUserPasswordDto>,
+}
+
+/// Mirrors [`NewUserPassword`](account_management_sdk::NewUserPassword).
+/// `value` is redacted in `Debug`; do not log this struct directly.
+#[derive(Clone)]
+#[modkit_macros::api_dto(request)]
+pub struct NewUserPasswordDto {
+    pub value: String,
+    #[serde(default)]
+    pub temporary: bool,
+}
+
+impl std::fmt::Debug for NewUserPasswordDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewUserPasswordDto")
+            .field("value", &"<redacted>")
+            .field("temporary", &self.temporary)
+            .finish()
+    }
 }
 
 impl UserCreateRequestDto {
@@ -139,6 +169,15 @@ impl UserCreateRequestDto {
         if let Some(display_name) = self.display_name {
             payload = payload.with_display_name(display_name);
         }
+        if let Some(first_name) = self.first_name {
+            payload = payload.with_first_name(first_name);
+        }
+        if let Some(last_name) = self.last_name {
+            payload = payload.with_last_name(last_name);
+        }
+        if let Some(pw) = self.password {
+            payload = payload.with_password(pw.value, pw.temporary);
+        }
         payload
     }
 }
@@ -154,6 +193,10 @@ pub struct UserDto {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
 }
 
 impl UserDto {
@@ -164,6 +207,8 @@ impl UserDto {
             username: user.username,
             email: user.email,
             display_name: user.display_name,
+            first_name: user.first_name,
+            last_name: user.last_name,
         }
     }
 }

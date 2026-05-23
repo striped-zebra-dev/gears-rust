@@ -23,8 +23,8 @@ use account_management_sdk::{IdpUser, MetadataEntry, Tenant, TenantId, TenantSta
 use gts::GtsSchemaId;
 
 use super::{
-    PutTenantMetadataDto, ResolvedTenantMetadataDto, TenantCreateRequestDto, TenantDto,
-    TenantMetadataEntryDto, TenantUpdateRequestDto, UserCreateRequestDto, UserDto,
+    NewUserPasswordDto, PutTenantMetadataDto, ResolvedTenantMetadataDto, TenantCreateRequestDto,
+    TenantDto, TenantMetadataEntryDto, TenantUpdateRequestDto, UserCreateRequestDto, UserDto,
 };
 
 fn sample_tenant() -> Uuid {
@@ -193,6 +193,109 @@ fn user_create_dto_full_payload_round_trips_into_idp_new_user() {
 }
 
 #[test]
+fn user_create_dto_lowers_first_last_name_and_password_into_idp_new_user() {
+    // Wire→SDK lowering MUST propagate every new optional verbatim.
+    // Plugins such as the static / Keycloak IdPs read these fields
+    // off `IdpNewUser` directly — a regression where the DTO drops
+    // first_name / last_name / password would silently degrade
+    // "create user with credentials" into a credential-less create.
+    let raw = r#"{
+        "username": "alice",
+        "email": "alice@example.test",
+        "first_name": "Alice",
+        "last_name": "Anderson",
+        "password": {"value": "s3cret!", "temporary": true}
+    }"#;
+    let dto: UserCreateRequestDto = serde_json::from_str(raw).unwrap();
+    let payload = dto.into_idp_new_user();
+    assert_eq!(payload.username, "alice");
+    assert_eq!(payload.email.as_deref(), Some("alice@example.test"));
+    assert_eq!(payload.first_name.as_deref(), Some("Alice"));
+    assert_eq!(payload.last_name.as_deref(), Some("Anderson"));
+    let pw = payload.password.as_ref().expect("password lowered");
+    assert_eq!(pw.value, "s3cret!");
+    assert!(pw.temporary);
+}
+
+#[test]
+fn user_create_dto_password_temporary_defaults_to_false() {
+    // The published REST contract lets callers omit `temporary` for
+    // the permanent-credential case; the DTO mirrors the SDK default
+    // (false). Without `#[serde(default)]` on the DTO we would
+    // require `temporary` to be present in every payload — a breaking
+    // change vs. the SDK shape.
+    let raw = r#"{
+        "username": "bob",
+        "password": {"value": "hunter2"}
+    }"#;
+    let dto: UserCreateRequestDto = serde_json::from_str(raw).unwrap();
+    let pw = dto.password.as_ref().expect("password parsed");
+    assert!(
+        !pw.temporary,
+        "missing `temporary` MUST default to false on the wire"
+    );
+    let payload = dto.into_idp_new_user();
+    let lowered = payload.password.as_ref().expect("password lowered");
+    assert!(!lowered.temporary, "default MUST survive the lowering");
+}
+
+#[test]
+fn new_user_password_dto_debug_redacts_value() {
+    // `NewUserPasswordDto` carries plaintext only for the duration of
+    // the create call. Any `tracing::debug!(?body)` on the wrapping
+    // request DTO MUST NOT spill the password into structured logs.
+    let dto = NewUserPasswordDto {
+        value: "super-secret-password".into(),
+        temporary: true,
+    };
+    let rendered = format!("{dto:?}");
+    assert!(
+        !rendered.contains("super-secret-password"),
+        "plaintext password leaked into Debug: `{rendered}`"
+    );
+    assert!(
+        rendered.contains("<redacted>"),
+        "Debug must mark the redaction explicitly: `{rendered}`"
+    );
+    assert!(
+        rendered.contains("temporary: true"),
+        "non-sensitive temporary flag must remain visible: `{rendered}`"
+    );
+}
+
+#[test]
+fn user_create_dto_debug_does_not_leak_password() {
+    // `UserCreateRequestDto` keeps `#[derive(Debug)]`; the nested
+    // `NewUserPasswordDto` custom Debug is what protects us. This test
+    // pins that interaction so a future field rename / type swap
+    // cannot regress redaction at the request level.
+    let dto = UserCreateRequestDto {
+        username: "alice".into(),
+        email: Some("alice@example.test".into()),
+        display_name: None,
+        first_name: Some("Alice".into()),
+        last_name: Some("Anderson".into()),
+        password: Some(NewUserPasswordDto {
+            value: "super-secret-password".into(),
+            temporary: false,
+        }),
+    };
+    let rendered = format!("{dto:?}");
+    assert!(
+        !rendered.contains("super-secret-password"),
+        "plaintext password leaked from UserCreateRequestDto Debug: `{rendered}`"
+    );
+    assert!(
+        rendered.contains("<redacted>"),
+        "request Debug must mark the password redaction: `{rendered}`"
+    );
+    assert!(
+        rendered.contains("alice@example.test"),
+        "non-sensitive email must remain visible: `{rendered}`"
+    );
+}
+
+#[test]
 fn user_create_dto_rejects_missing_username() {
     // `UserCreateRequest.required = [username]` — the schema
     // contract is "username MUST be present"; serde reflects that as
@@ -242,6 +345,27 @@ fn user_dto_full_payload_round_trips_from_idp_user() {
         }),
         "wire shape must mirror OpenAPI User",
     );
+}
+
+#[test]
+fn user_dto_carries_first_last_name_when_present() {
+    let user = IdpUser::new(sample_user_id(), "alice")
+        .with_first_name("Alice")
+        .with_last_name("Anderson");
+    let dto = UserDto::from_idp_user(user);
+    let json: Value = serde_json::to_value(&dto).unwrap();
+    assert_eq!(json["first_name"], "Alice");
+    assert_eq!(json["last_name"], "Anderson");
+}
+
+#[test]
+fn user_dto_omits_first_last_name_when_absent() {
+    let user = IdpUser::new(sample_user_id(), "alice");
+    let dto = UserDto::from_idp_user(user);
+    let json: Value = serde_json::to_value(&dto).unwrap();
+    let map = json.as_object().unwrap();
+    assert!(!map.contains_key("first_name"));
+    assert!(!map.contains_key("last_name"));
 }
 
 // ---- Tenant hierarchy DTOs --------------------------------------

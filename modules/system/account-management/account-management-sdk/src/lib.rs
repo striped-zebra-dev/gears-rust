@@ -69,8 +69,8 @@ pub use idp::{
 };
 pub use idp_user::{
     IdpDeprovisionUserRequest, IdpListUsersRequest, IdpNewUser, IdpProvisionUserRequest,
-    IdpTenantContext, IdpUser, IdpUserOperationFailure, IdpUserPagination, IdpUserPaginationError,
-    ListUsersQuery,
+    IdpTenantContext, IdpUser, IdpUserFilterField, IdpUserOperationFailure, IdpUserPagination,
+    IdpUserPaginationError, IdpUserQuery, ListUsersQuery, NewUserPassword,
 };
 pub use metadata::{
     MetadataEntry, MetadataEntryFilterField, MetadataEntryQuery, UpsertMetadataRequest,

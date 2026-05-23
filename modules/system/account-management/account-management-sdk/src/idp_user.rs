@@ -48,6 +48,7 @@
 //! surface mapping.
 
 use gts::GtsSchemaId;
+use modkit_odata_macros::ODataFilterable;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -155,7 +156,7 @@ impl IdpTenantContext {
 /// service layer validates instances against that schema at runtime
 /// via the GTS Types Registry — see
 /// `cf-account-management::domain::gts_validation::validate_new_user_payload_via_gts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct IdpNewUser {
     /// Login identifier (REQUIRED per the published schema).
@@ -166,9 +167,75 @@ pub struct IdpNewUser {
     /// Optional display name surfaced through the projection.
     /// Plugin authors derive this from vendor-specific shapes —
     /// Keycloak combines `firstName`/`lastName`; OIDC providers
-    /// fold `given_name`/`family_name`/`name` claims.
+    /// fold `given_name`/`family_name`/`name` claims. When
+    /// `first_name`/`last_name` are also supplied the plugin should
+    /// prefer the granular fields and ignore `display_name` (or
+    /// derive it as `"{first_name} {last_name}"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Optional given name. Forwarded verbatim to the `IdP` (Keycloak
+    /// `firstName`). Some `IdP`s require it for "account fully set up"
+    /// validation before password grants will succeed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    /// Optional family name. Forwarded verbatim to the `IdP` (Keycloak
+    /// `lastName`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
+    /// Optional initial password supplied atomically with user creation.
+    /// When `Some`, the `IdP` plugin sets the credential during user
+    /// creation so the caller can immediately password-grant on the new
+    /// account. When `None`, the plugin creates the user without a
+    /// password — the operator is expected to drive password setup via
+    /// an out-of-band flow (admin reset, reset-email, etc.). The value
+    /// is redacted in `Debug`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<NewUserPassword>,
+}
+
+/// Initial credential bundle for [`IdpNewUser::password`].
+///
+/// `value` is redacted in `Debug` so accidental log emission of a
+/// `IdpProvisionUserRequest`-shaped payload never leaks the secret.
+/// Plugins that build a vendor-specific payload should consume `value`
+/// directly via field access — do not derive `Debug`-stringified forms
+/// for logging.
+#[derive(Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct NewUserPassword {
+    /// Plaintext password as the operator supplied it. Stays plaintext
+    /// only for the duration of the create call — the plugin forwards
+    /// it to the `IdP` and never persists it on the AM side.
+    pub value: String,
+    /// `true` → the credential is marked temporary at the `IdP`. For
+    /// Keycloak this attaches `UPDATE_PASSWORD` to the user's required
+    /// actions so the next interactive sign-in forces a rotation.
+    /// `false` → permanent credential, password grants succeed without
+    /// an intermediate `UPDATE_PASSWORD` step.
+    #[serde(default)]
+    pub temporary: bool,
+}
+
+impl std::fmt::Debug for NewUserPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewUserPassword")
+            .field("value", &"<redacted>")
+            .field("temporary", &self.temporary)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for IdpNewUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdpNewUser")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("display_name", &self.display_name)
+            .field("first_name", &self.first_name)
+            .field("last_name", &self.last_name)
+            .field("password", &self.password)
+            .finish()
+    }
 }
 
 impl IdpNewUser {
@@ -180,6 +247,9 @@ impl IdpNewUser {
             username: username.into(),
             email: None,
             display_name: None,
+            first_name: None,
+            last_name: None,
+            password: None,
         }
     }
 
@@ -192,6 +262,29 @@ impl IdpNewUser {
     #[must_use]
     pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
         self.display_name = Some(display_name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_first_name(mut self, first_name: impl Into<String>) -> Self {
+        self.first_name = Some(first_name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_last_name(mut self, last_name: impl Into<String>) -> Self {
+        self.last_name = Some(last_name.into());
+        self
+    }
+
+    /// Attach an initial password. Pass `temporary=true` to force
+    /// `UPDATE_PASSWORD` on the user's first interactive sign-in.
+    #[must_use]
+    pub fn with_password(mut self, value: impl Into<String>, temporary: bool) -> Self {
+        self.password = Some(NewUserPassword {
+            value: value.into(),
+            temporary,
+        });
         self
     }
 }
@@ -210,7 +303,7 @@ impl IdpNewUser {
 /// `gts_macros::struct_to_gts_schema` because the macro's "base
 /// type" contract requires the struct to carry either a
 /// `GtsInstanceId`-typed `id` field or a `GtsSchemaId`-typed
-/// `gts_type` field — `IdpUser.id` is the IdP-issued domain UUID
+/// `gts_type` field — `IdpUser.id` is the `IdP`-issued domain UUID
 /// (Keycloak's user UUID, etc.), not a GTS instance identifier, so
 /// the two semantics are intentionally distinct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +323,13 @@ pub struct IdpUser {
     /// OIDC `name`/`given_name`/`family_name` claims, etc.).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Optional given name (Keycloak `firstName`, OIDC `given_name`).
+    /// Plugin projects it from the vendor profile when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    /// Optional family name (Keycloak `lastName`, OIDC `family_name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
 }
 
 impl IdpUser {
@@ -242,6 +342,8 @@ impl IdpUser {
             username: username.into(),
             email: None,
             display_name: None,
+            first_name: None,
+            last_name: None,
         }
     }
 
@@ -256,28 +358,54 @@ impl IdpUser {
         self.display_name = Some(display_name.into());
         self
     }
+
+    #[must_use]
+    pub fn with_first_name(mut self, first_name: impl Into<String>) -> Self {
+        self.first_name = Some(first_name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_last_name(mut self, last_name: impl Into<String>) -> Self {
+        self.last_name = Some(last_name.into());
+        self
+    }
 }
 
 /// Pagination parameters for [`IdpPluginClient::list_users`].
 ///
 /// Cursor-based, wire-compatible with `modkit_odata::Page<T>` (same
 /// envelope `cyberware-resource-group-sdk` and the AM REST surface
-/// will use). The cursor itself is an **opaque token owned by the
-/// `IdP` plugin** — AM never inspects, signs, or namespaces it. A
-/// plugin backed by a SQL store SHOULD embed a filter hash and a
-/// stable sort key in the cursor (see
-/// [`modkit_odata::pagination`]) so that a client switching
-/// `user_id_filter` mid-pagination receives a deterministic
-/// invalid-cursor error instead of silently jumping pages; a plugin
-/// wrapping a vendor SDK (e.g. Zitadel `next_token`) MAY forward the
-/// native token unchanged.
+/// use). At the SPI layer the cursor is an **opaque token owned by
+/// the `IdP` plugin** — AM never inspects it on the plugin-call
+/// side.
+///
+/// At the **AM REST boundary**, however, the current `OData`
+/// extractor parses the wire `cursor=` query param via
+/// [`modkit_odata::CursorV1::decode`]. That narrows the contract:
+/// today's REST-facing cursors MUST be `CursorV1`-shaped. The
+/// `static-idp-plugin` plugin honours this end-to-end (encodes a
+/// key-tuple `CursorV1` on every page boundary, validates drift via
+/// `validate_cursor_against`). A future plugin wrapping a vendor SDK
+/// (e.g. Zitadel `next_token`, Keycloak plugin-encoded
+/// `(filter_hash, offset)`) would need to either:
+///   * encode its native token into a `CursorV1.k` slot (the simplest
+///     path; the AM REST layer stays unchanged), OR
+///   * expose a parallel REST surface that bypasses the `OData`
+///     extractor for cursor handling.
+///
+/// A plugin backed by a SQL store SHOULD embed a filter hash and a
+/// stable sort key in the cursor (see [`modkit_odata::pagination`])
+/// so that a client switching `$filter` mid-pagination receives a
+/// deterministic invalid-cursor error instead of silently jumping
+/// pages.
 ///
 /// `top` and `cursor` are private; construction goes through
 /// [`IdpUserPagination::new`] / [`IdpUserPagination::default`]. Read via
 /// [`IdpUserPagination::top`] and [`IdpUserPagination::cursor`].
 ///
 /// `top = 0` would turn a tenant-scoped existence check
-/// (`?user_id=<id>` --
+/// (`$filter=id eq <uuid>` --
 /// `cpt-cf-account-management-flow-idp-user-operations-contract-list-users`)
 /// into a false-negative empty page on providers that honor the
 /// literal value, since AM cannot disambiguate "user absent" from
@@ -354,6 +482,18 @@ impl IdpUserPagination {
             });
         }
         Ok(Self { top, cursor })
+    }
+
+    /// Pagination shape for the authoritative single-user existence check
+    /// (`$filter=id eq <uuid>`): `top = 1`, no cursor. Bypasses the
+    /// validation in [`Self::new`] because the literal `top = 1` is
+    /// trivially valid; this lets the helper stay `const`.
+    #[must_use]
+    pub const fn for_existence_check() -> Self {
+        Self {
+            top: 1,
+            cursor: None,
+        }
     }
 
     /// Read-only access to the validated `top`. Always `>= 1` per the
@@ -498,40 +638,54 @@ impl IdpDeprovisionUserRequest {
     }
 }
 
-/// Request shape for [`IdpPluginClient::list_users`].
+/// Request shape for [`crate::idp::IdpPluginClient::list_users`].
 ///
-/// `tenant_context.tenant_id` is the tenant scope; see
-/// [`IdpProvisionUserRequest`] for the duplication-removal rationale.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `filter` and `order` carry the validated `OData` translation handed
+/// down from the AM service layer. Plugins MUST honour both; the
+/// existence-check / point-lookup contract previously expressed as
+/// `user_id_filter` is now `$filter=id eq <uuid>` with `top = 1`.
+/// Caller MUST NOT change `filter` or `order` between continuation
+/// requests with the same opaque cursor — plugins do not detect drift.
+///
+/// Both `Page(len = 1)` and `Page(len = 0)` are success outcomes per
+/// `cpt-cf-account-management-flow-idp-user-operations-contract-list-users`;
+/// plugins MUST NOT surface "user absent" as an error. An empty page
+/// is the canonical "absent" signal for the `id eq <uuid>` filter shape.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct IdpListUsersRequest {
     pub tenant_context: IdpTenantContext,
-    /// Optional single-user filter. When `Some`, the provider returns
-    /// either a one-element page (the user exists in this tenant
-    /// scope) or an empty page (the user is absent). Both outcomes
-    /// are success per
-    /// `cpt-cf-account-management-flow-idp-user-operations-contract-list-users`.
-    pub user_id_filter: Option<Uuid>,
     pub pagination: IdpUserPagination,
+    pub filter: Option<modkit_odata::filter::FilterNode<IdpUserFilterField>>,
+    pub order: Option<modkit_odata::ODataOrderBy>,
 }
 
 impl IdpListUsersRequest {
-    /// Construct a request with the two required fields.
-    /// `user_id_filter` defaults to `None`; set it via
-    /// [`Self::with_user_id_filter`] for the authoritative
-    /// single-user existence-check shape.
+    /// Construct a request with no filter / order.
     #[must_use]
     pub const fn new(tenant_context: IdpTenantContext, pagination: IdpUserPagination) -> Self {
         Self {
             tenant_context,
-            user_id_filter: None,
             pagination,
+            filter: None,
+            order: None,
         }
     }
 
+    /// Builder: attach a typed filter.
     #[must_use]
-    pub const fn with_user_id_filter(mut self, user_id: Uuid) -> Self {
-        self.user_id_filter = Some(user_id);
+    pub fn with_filter(
+        mut self,
+        filter: modkit_odata::filter::FilterNode<IdpUserFilterField>,
+    ) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Builder: attach an order.
+    #[must_use]
+    pub fn with_order(mut self, order: modkit_odata::ODataOrderBy) -> Self {
+        self.order = Some(order);
         self
     }
 }
@@ -602,61 +756,105 @@ impl core::fmt::Display for IdpUserOperationFailure {
 
 impl core::error::Error for IdpUserOperationFailure {}
 
-/// Query parameters for
-/// [`crate::AccountManagementClient::list_users`].
+/// AM-client request to [`crate::idp::IdpPluginClient::list_users`]
+/// via the AM-side `UserService`. Caller-controlled filter and order;
+/// the AM service injects a default order + `id ASC` tiebreaker before
+/// forwarding to the plugin.
 ///
-/// Groups the pagination and the optional single-user filter into one
-/// extensible struct — symmetric with the `&ODataQuery` parameter on
-/// `list_children` / `list_metadata`. The wrapper is **intentionally
-/// not** named `*ODataQuery`: `list_users` forwards to the configured
-/// `IdP` plugin ([`crate::IdpPluginClient::list_users`]), and the
-/// plugin contract is vendor-defined — arbitrary `OData` `$filter`
-/// expressions (`email eq 'x'`, `status eq 'active'`, …) cannot be
-/// translated to vendor APIs in any general way. Any future field
-/// added to this struct MUST correspond to a capability the
-/// [`crate::IdpListUsersRequest`] contract exposes, otherwise it
-/// would silently no-op at the plugin boundary.
-///
-/// Today the only honored filter is `user_id_filter` — the
-/// authoritative single-user existence-check shape consumed by
-/// sibling features (user-groups membership writes, RBAC mapping).
+/// Both `Page(len = 1)` and `Page(len = 0)` are success outcomes per
+/// `cpt-cf-account-management-flow-idp-user-operations-contract-list-users`;
+/// empty page is the canonical "absent" signal for the
+/// `$filter=id eq <uuid>` point-lookup shape.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ListUsersQuery {
-    /// Page size + opaque cursor. Defaults to
-    /// [`IdpUserPagination::default`] (top = 50, no cursor).
     pub pagination: IdpUserPagination,
-    /// Optional `user_id` filter. `Some(_)` is the authoritative
-    /// existence-check shape — see
-    /// [`IdpListUsersRequest::user_id_filter`] for the contract.
-    /// When set, the AM service-layer enforces `top = 1` and
-    /// `cursor = None` so the existence-check semantics cannot be
-    /// bypassed.
-    pub user_id_filter: Option<Uuid>,
+    pub filter: Option<modkit_odata::filter::FilterNode<IdpUserFilterField>>,
+    pub order: Option<modkit_odata::ODataOrderBy>,
 }
 
 impl ListUsersQuery {
-    /// Construct a query with the given pagination and no
-    /// `user_id_filter`. Equivalent to
-    /// `ListUsersQuery { pagination, user_id_filter: None }`.
+    /// Construct a query with the given pagination and no filter / order.
     #[must_use]
     pub const fn new(pagination: IdpUserPagination) -> Self {
         Self {
             pagination,
-            user_id_filter: None,
+            filter: None,
+            order: None,
         }
     }
 
-    /// Builder: attach a `user_id_filter`. Caller MUST pair this with
-    /// `pagination` such that `top = 1` and `cursor = None`; the AM
-    /// service-layer enforces this and surfaces a violation as
-    /// `Validation`.
+    /// Builder: attach a typed filter.
     #[must_use]
-    pub const fn with_user_id_filter(mut self, user_id: Uuid) -> Self {
-        self.user_id_filter = Some(user_id);
+    pub fn with_filter(
+        mut self,
+        filter: modkit_odata::filter::FilterNode<IdpUserFilterField>,
+    ) -> Self {
+        self.filter = Some(filter);
         self
     }
+
+    /// Builder: attach an order.
+    #[must_use]
+    pub fn with_order(mut self, order: modkit_odata::ODataOrderBy) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    /// Ergonomic helper for the authoritative single-user
+    /// existence-check shape. Pre-builds
+    /// `$filter = id eq <uuid>` and pins pagination to `top = 1`,
+    /// `cursor = None`. The AM service-layer applies the defensive
+    /// returned-id guard against contract drift from a plugin that
+    /// silently ignores the filter.
+    #[must_use]
+    pub fn with_id(id: Uuid) -> Self {
+        let filter = modkit_odata::filter::FilterNode::binary(
+            IdpUserFilterField::Id,
+            modkit_odata::filter::FilterOp::Eq,
+            modkit_odata::filter::ODataValue::Uuid(id),
+        );
+        Self {
+            pagination: IdpUserPagination::for_existence_check(),
+            filter: Some(filter),
+            order: None,
+        }
+    }
 }
+
+/// Filter-fields definition struct that feeds the
+/// [`modkit_odata_macros::ODataFilterable`] derive. Exists only to
+/// generate [`IdpUserQueryFilterField`] (re-exported as
+/// [`IdpUserFilterField`]) — the user-facing request shape is
+/// [`ListUsersQuery`], not this struct. Mirrors the
+/// [`crate::tenant::TenantInfoQuery`] convention.
+#[derive(ODataFilterable)]
+#[allow(dead_code)]
+pub struct IdpUserQuery {
+    /// User UUID. Filter with `$filter=id eq <uuid>` for the
+    /// authoritative point-lookup / existence-check shape.
+    #[odata(filter(kind = "Uuid"))]
+    pub id: Uuid,
+    /// Login identifier (Keycloak `username`, OIDC `preferred_username`).
+    #[odata(filter(kind = "String"))]
+    pub username: String,
+    /// Email address (Keycloak `email`, OIDC `email`).
+    #[odata(filter(kind = "String"))]
+    pub email: String,
+    /// Display name surfaced through the projection. Plugins typically
+    /// derive it (Keycloak: concat `firstName`/`lastName`; OIDC: `name`
+    /// claim).
+    #[odata(filter(kind = "String"))]
+    pub display_name: String,
+    /// Given name (Keycloak `firstName`, OIDC `given_name`).
+    #[odata(filter(kind = "String"))]
+    pub first_name: String,
+    /// Family name (Keycloak `lastName`, OIDC `family_name`).
+    #[odata(filter(kind = "String"))]
+    pub last_name: String,
+}
+
+pub use IdpUserQueryFilterField as IdpUserFilterField;
 
 #[cfg(test)]
 #[path = "idp_user_tests.rs"]

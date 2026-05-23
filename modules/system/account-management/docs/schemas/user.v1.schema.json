@@ -25,6 +25,18 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 255
+    },
+    "first_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Optional given name (Keycloak firstName, OIDC given_name)."
+    },
+    "last_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Optional family name (Keycloak lastName, OIDC family_name)."
     }
   }
 }

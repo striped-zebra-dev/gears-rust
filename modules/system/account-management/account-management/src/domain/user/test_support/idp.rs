@@ -25,11 +25,14 @@ use std::sync::Mutex;
 
 use account_management_sdk::{
     IdpDeprovisionUserRequest, IdpListUsersRequest, IdpPluginClient, IdpProvisionUserRequest,
-    IdpUser, IdpUserOperationFailure,
+    IdpUser, IdpUserFilterField, IdpUserOperationFailure,
 };
 use async_trait::async_trait;
 use modkit_macros::domain_model;
-use modkit_odata::{Page, PageInfo};
+use modkit_odata::{
+    ODataOrderBy, Page, PageInfo,
+    filter::{FilterNode, FilterOp, ODataValue},
+};
 use modkit_security::SecurityContext;
 use serde_json::Value;
 use uuid::Uuid;
@@ -61,6 +64,19 @@ pub enum FakeUserOutcome {
     RejectPayload,
 }
 
+/// Capture of a `list_users` invocation sufficient for AM service-layer
+/// test assertions: tenant scope + the typed `OData` filter and order
+/// that were forwarded to the plugin layer. Replaces the older
+/// `(tenant_id, Option<Uuid>)` tuple shape now that
+/// [`IdpListUsersRequest`] carries `Option<FilterNode<IdpUserFilterField>>`
+/// + `Option<ODataOrderBy>` rather than a single-purpose `user_id_filter`.
+#[derive(Clone, Debug)]
+pub struct RecordedListCall {
+    pub tenant_id: Uuid,
+    pub filter: Option<FilterNode<IdpUserFilterField>>,
+    pub order: Option<ODataOrderBy>,
+}
+
 /// In-memory `FakeIdpUserProvisioner` implementing
 /// [`IdpPluginClient`]. Per-method outcomes default to
 /// [`FakeUserOutcome::Ok`]; tests override them via the
@@ -76,7 +92,7 @@ pub struct FakeIdpUserProvisioner {
     list_outcome: Mutex<FakeUserOutcome>,
     create_calls: Mutex<Vec<(Uuid, String)>>,
     delete_calls: Mutex<Vec<(Uuid, Uuid)>>,
-    list_calls: Mutex<Vec<(Uuid, Option<Uuid>)>>,
+    list_calls: Mutex<Vec<RecordedListCall>>,
     /// Per-call snapshot of `req.tenant_context.metadata` recorded
     /// from every `IdP` method (provision / deprovision / list). Lets
     /// service-level tests pin that the AM-loaded
@@ -157,7 +173,7 @@ impl FakeIdpUserProvisioner {
         self.delete_calls.lock().expect("lock").clone()
     }
 
-    pub fn list_calls_snapshot(&self) -> Vec<(Uuid, Option<Uuid>)> {
+    pub fn list_calls_snapshot(&self) -> Vec<RecordedListCall> {
         self.list_calls.lock().expect("lock").clone()
     }
 
@@ -265,7 +281,11 @@ impl IdpPluginClient for FakeIdpUserProvisioner {
         self.list_calls
             .lock()
             .expect("lock")
-            .push((req.tenant_context.tenant_id, req.user_id_filter));
+            .push(RecordedListCall {
+                tenant_id: req.tenant_context.tenant_id,
+                filter: req.filter.clone(),
+                order: req.order.clone(),
+            });
         self.list_metadata_snapshots
             .lock()
             .expect("lock")
@@ -274,10 +294,9 @@ impl IdpPluginClient for FakeIdpUserProvisioner {
         match oc {
             FakeUserOutcome::Ok => {
                 let items = self.list_page_items.lock().expect("lock").clone();
-                let filtered: Vec<_> = if let Some(uid) = req.user_id_filter {
-                    items.into_iter().filter(|u| u.id == uid).collect()
-                } else {
-                    items
+                let filtered: Vec<IdpUser> = match req.filter.as_ref() {
+                    Some(f) => items.into_iter().filter(|u| matches_filter(u, f)).collect(),
+                    None => items,
                 };
                 // Emulate a paginating IdP backed by a stable Vec
                 // ordering. The opaque cursor is just the decimal
@@ -317,5 +336,79 @@ impl IdpPluginClient for FakeIdpUserProvisioner {
                 detail: "fake rejected".into(),
             }),
         }
+    }
+}
+
+/// In-memory evaluator for the typed `OData` filter forwarded on
+/// [`IdpListUsersRequest::filter`]. Mirrors the contract documented in
+/// the spec §4.4: case-insensitive for `Contains`/`StartsWith`/
+/// `EndsWith`, case-sensitive for `Eq`/`Ne`; composite `And`/`Or`/`Not`
+/// are honoured; unsupported composite ops short-circuit as match-all
+/// (they never reach the fake — the parser rejects them upstream).
+/// Order-by is recorded but not applied here; static-idp tests pin the
+/// real order semantics for the production path.
+fn matches_filter(user: &IdpUser, filter: &FilterNode<IdpUserFilterField>) -> bool {
+    match filter {
+        FilterNode::Binary { field, op, value } => eval_binary(user, *field, *op, value),
+        FilterNode::Composite {
+            op: FilterOp::And,
+            children,
+        } => children.iter().all(|c| matches_filter(user, c)),
+        FilterNode::Composite {
+            op: FilterOp::Or,
+            children,
+        } => children.iter().any(|c| matches_filter(user, c)),
+        FilterNode::Composite { .. } => unreachable!(
+            "the OData parser only emits And/Or as composite ops; everything else \
+             surfaces as Binary/InList/Not - reaching this arm signals a bug \
+             upstream of the plugin SPI"
+        ),
+        FilterNode::Not(inner) => !matches_filter(user, inner),
+        FilterNode::InList { field, values } => values
+            .iter()
+            .any(|v| eval_binary(user, *field, FilterOp::Eq, v)),
+    }
+}
+
+fn eval_binary(
+    user: &IdpUser,
+    field: IdpUserFilterField,
+    op: FilterOp,
+    value: &ODataValue,
+) -> bool {
+    // Project the comparable string from the user row. `None` on an
+    // optional field surfaces here as `None` — `Eq` then never matches;
+    // `Ne` always matches (an absent value is, by definition, "not
+    // equal" to any concrete probe).
+    let lhs: Option<String> = match field {
+        IdpUserFilterField::Id => Some(user.id.to_string()),
+        IdpUserFilterField::Username => Some(user.username.clone()),
+        IdpUserFilterField::Email => user.email.clone(),
+        IdpUserFilterField::DisplayName => user.display_name.clone(),
+        IdpUserFilterField::FirstName => user.first_name.clone(),
+        IdpUserFilterField::LastName => user.last_name.clone(),
+    };
+    let rhs: String = match value {
+        ODataValue::String(s) => s.clone(),
+        ODataValue::Uuid(u) => u.to_string(),
+        other => unreachable!(
+            "IdpUserFilterField declares only String and Uuid kinds — the REST parser \
+             rejects every other ODataValue at the boundary; got {other:?}"
+        ),
+    };
+    let Some(lhs) = lhs else {
+        return matches!(op, FilterOp::Ne);
+    };
+    let lo = |s: &str| s.to_lowercase();
+    match op {
+        FilterOp::Eq => lhs == rhs,
+        FilterOp::Ne => lhs != rhs,
+        FilterOp::Contains => lo(&lhs).contains(&lo(&rhs)),
+        FilterOp::StartsWith => lo(&lhs).starts_with(&lo(&rhs)),
+        FilterOp::EndsWith => lo(&lhs).ends_with(&lo(&rhs)),
+        other => unreachable!(
+            "Gt/Ge/Lt/Le/In/And/Or are not legal on the String/Uuid IdpUserFilterField \
+             surface — REST parser rejects upstream; got {other:?}"
+        ),
     }
 }

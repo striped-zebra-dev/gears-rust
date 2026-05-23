@@ -3,7 +3,7 @@
 
 use axum::Router;
 use modkit::api::OpenApiRegistry;
-use modkit::api::operation_builder::OperationBuilder;
+use modkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
 
 use crate::api::rest::{dto, handlers};
 
@@ -20,42 +20,25 @@ pub(super) fn register_users_routes(mut router: Router, openapi: &dyn OpenApiReg
         .operation_id("account_management.list_tenant_users")
         .summary("List users provisioned in a tenant")
         .description(
-            "List users provisioned in the tenant via the configured IdP plugin. Supplying \
-             `user_id` turns the response into an authoritative existence check -- the page \
-             contains at most one element and an empty page is the canonical \"user absent\" \
-             signal (no 404). When `user_id` is supplied the server pins `top=1` and ignores \
-             any client-provided `limit` / `cursor` -- the filtered shape is an existence \
-             check, not a paginated query. AM persists no local user state; every read is a \
-             pass-through to the IdP.",
+            "List users provisioned in the tenant via the configured IdP plugin. \
+             Filter via OData `$filter` over `id` (Uuid), `username`, `email`, \
+             `display_name`, `first_name`, `last_name` (String) with operators \
+             `eq`, `ne`, `in`, and `contains` / `startswith` / `endswith` on \
+             String fields (case-insensitive); combine via `and` / `or` / `not`. \
+             Sort via `$orderby` over the same fields (default: `username ASC, id ASC` \
+             with `id ASC` tiebreaker appended even when the caller supplies their own \
+             order). Point lookup is `$filter=id eq <uuid>` with `top=1`: empty page \
+             is the canonical \"user absent\" signal (no 404). Cursor pagination is \
+             opaque; caller MUST NOT change `$filter` or `$orderby` between \
+             continuation requests with the same cursor. AM persists no local user \
+             state; every read is a pass-through to the IdP.",
         )
         .tag(API_TAG)
         .authenticated()
         .no_license_required()
         .path_param("tenant_id", "Tenant UUID")
-        // `query_param_typed(..., "uuid")` currently degrades to a
-        // plain-string schema in modkit's `OpenApiRegistry` (the
-        // registry special-cases only `integer` / `number` /
-        // `boolean`). The runtime serde-side deserialization still
-        // rejects malformed UUIDs at the wire boundary via
-        // `Query<ListUsersQuery>`'s `user_id: Option<Uuid>` field,
-        // so callers see a clean 400 on bad input regardless of
-        // OpenAPI fidelity. The `"uuid"` hint is kept so the
-        // registry picks the format up automatically once modkit
-        // adds string-format awareness; see the runtime-spec drift
-        // pinned in the route-level test plan.
-        .query_param_typed(
-            "user_id",
-            false,
-            "Optional UUID user identifier filter for point lookup behavior.",
-            "uuid",
-        )
-        .query_param_typed(
-            "limit",
-            false,
-            "Maximum number of users to return (1..200, default 50).",
-            "integer",
-        )
-        .query_param("cursor", false, "Cursor for pagination")
+        .with_odata_filter::<account_management_sdk::IdpUserFilterField>()
+        .with_odata_orderby::<account_management_sdk::IdpUserFilterField>()
         .handler(handlers::list_users)
         .json_response_with_schema::<modkit_odata::Page<dto::UserDto>>(
             openapi,
@@ -86,7 +69,7 @@ pub(super) fn register_users_routes(mut router: Router, openapi: &dyn OpenApiReg
              local user state -- the IdP becomes the source of truth on success. Returns \
              HTTP 201 Created with the projected user body. AM does NOT expose a per-user \
              GET; clients that need to re-read the user use the filtered listing \
-             `GET /tenants/{tenant_id}/users?user_id=<id>`.",
+             `GET /tenants/{tenant_id}/users?$filter=id eq <uuid>&$top=1`.",
         )
         .tag(API_TAG)
         .authenticated()

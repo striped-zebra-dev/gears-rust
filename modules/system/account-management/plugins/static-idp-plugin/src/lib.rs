@@ -19,7 +19,7 @@
 //! | `deprovision_tenant` | Returns `Ok(())`. |
 //! | `provision_user` | Echoes the request as an `IdpUser` whose `id` is a deterministic `UUIDv5` derived from `(tenant_id, username)`, then records it in the per-tenant in-memory cache. |
 //! | `deprovision_user` | Removes the matching row from the per-tenant cache; collapses removed-and-already-absent to `Ok(())` per the SDK contract. |
-//! | `list_users` | Paginates the per-tenant cache. Filtered point lookup (`user_id_filter = Some(_)`) returns either an empty page or a single-element page (the authoritative existence signal). The cursor is an opaque decimal offset into the sorted snapshot — non-numeric cursors surface as `IdpUserOperationFailure::Rejected` so a buggy / hostile client cannot smuggle state into the plugin. |
+//! | `list_users` | Paginates the per-tenant cache, honouring the typed `OData` filter (`FilterNode<IdpUserFilterField>`) and order (`ODataOrderBy`) on the SPI request. Filtered point lookup (`$filter = id eq <uuid>`) returns either an empty page or a single-element page (the authoritative existence signal). Default order is `username ASC, id ASC` (with `id ASC` tiebreaker injected on caller-supplied orders too). Cursors are `modkit_odata::CursorV1` key-tuple boundaries; mismatch between the cursor's encoded order and the request's effective order surfaces as `IdpUserOperationFailure::Rejected`, so a hostile / buggy client cannot smuggle state into the plugin. |
 //!
 //! ## State
 //!

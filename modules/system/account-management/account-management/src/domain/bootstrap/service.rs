@@ -1284,11 +1284,22 @@ impl<R: TenantRepo> BootstrapService<R> {
         match failure {
             IdpProvisionFailure::CleanFailure { detail } => {
                 self.compensate(scope, root_id, "clean-failure").await;
-                // The provider `detail` is logged via the
-                // `phase=failed` metric label above; the public
-                // envelope wraps it in `IdpUnavailable` whose
-                // canonical mapping redacts vendor strings before
-                // they reach the public Problem body.
+                // Redact the provider `detail` before logging — vendor
+                // SDK strings can carry hostnames, token-bearing
+                // fragments, or stack traces that MUST NOT reach the
+                // structured-log channel verbatim. Mirrors the
+                // Ambiguous arm below. The raw detail still flows into
+                // the public `IdpUnavailable` envelope where the
+                // canonical mapping further redacts vendor strings
+                // before they reach the public Problem body.
+                let (digest, len) = crate::domain::idp::redact_provider_detail(&detail);
+                warn!(
+                    target: "am.idp",
+                    classification = "clean-failure",
+                    detail_digest = digest,
+                    detail_len_chars = len,
+                    "idp provision returned CleanFailure during bootstrap"
+                );
                 DomainError::IdpUnavailable { detail }
             }
             IdpProvisionFailure::Ambiguous { detail } => {

@@ -556,18 +556,22 @@ pub trait IdpPluginClient: Send + Sync + 'static {
     /// the plugin-shaped token for the following page (`None` when
     /// the listing is exhausted).
     ///
-    /// AM never inspects the cursor — the plugin owns its format.
-    /// Plugins backed by a SQL store SHOULD encode a filter hash and
-    /// a stable sort key (see [`modkit_odata::pagination`]) so a
-    /// client switching `user_id_filter` mid-pagination receives a
-    /// deterministic invalid-cursor error rather than silently
-    /// jumping pages; vendor-SDK plugins MAY forward a native cursor
-    /// token (e.g. Zitadel `next_token`) unchanged.
+    /// At the plugin SPI the cursor is plugin-shaped; AM does not
+    /// inspect it on this side. Plugins backed by a SQL store SHOULD
+    /// encode a filter hash and a stable sort key (see
+    /// [`modkit_odata::pagination`]) so a client switching `$filter`
+    /// mid-pagination receives a deterministic invalid-cursor error
+    /// rather than silently jumping pages. The current AM REST surface
+    /// narrows the wire-side cursor to `modkit_odata::CursorV1`; see
+    /// [`crate::IdpUserPagination`] for the forward-compat notes on
+    /// vendor-native tokens.
     ///
-    /// A `user_id_filter = Some(_)` returning an empty page is the
-    /// authoritative existence signal AM consumes for downstream
-    /// features (e.g. `feature-user-groups` membership checks); both
-    /// the one-element and empty outcomes are success.
+    /// The canonical existence-check shape is `$filter = id eq <uuid>`
+    /// (constructed at the AM-client side via
+    /// [`crate::ListUsersQuery::with_id`]). An empty page is the
+    /// authoritative absent signal AM consumes for downstream features
+    /// (e.g. `feature-user-groups` membership checks); both the
+    /// one-element and empty outcomes are success.
     ///
     /// Default impl returns
     /// [`IdpUserOperationFailure::UnsupportedOperation`].

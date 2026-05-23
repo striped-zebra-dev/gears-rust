@@ -632,7 +632,7 @@ use account_management::infra::storage::repo_impl::{ConversionRepoImpl, Metadata
 use account_management_sdk::{
     IdpDeprovisionTenantRequest, IdpDeprovisionUserRequest, IdpListUsersRequest, IdpPluginClient,
     IdpProvisionFailure, IdpProvisionResult, IdpProvisionTenantRequest, IdpProvisionUserRequest,
-    IdpUser, IdpUserOperationFailure,
+    IdpUser, IdpUserFilterField, IdpUserOperationFailure,
 };
 use axum::Router;
 use axum::body::Body;
@@ -678,6 +678,24 @@ impl OpenApiRegistry for NoopOpenApiRegistry {
 /// in `create → list → list-with-user_id-filter → delete → list`
 /// could ship green. This stateful fake exercises every transition
 /// end-to-end.
+/// Detects the canonical `$filter = id eq <uuid>` point-lookup shape
+/// produced by `ListUsersQuery::with_id`. Local mirror of the
+/// equivalent helper in `domain::user::service` — kept in this
+/// integration harness so we don't need to leak the production helper.
+fn extract_top_level_id_eq(
+    filter: Option<&modkit_odata::filter::FilterNode<IdpUserFilterField>>,
+) -> Option<Uuid> {
+    use modkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+    match filter? {
+        FilterNode::Binary {
+            field: IdpUserFilterField::Id,
+            op: FilterOp::Eq,
+            value: ODataValue::Uuid(u),
+        } => Some(*u),
+        _ => None,
+    }
+}
+
 pub struct FakeIdpPlugin {
     users: parking_lot::Mutex<
         std::collections::HashMap<Uuid, std::collections::HashMap<Uuid, IdpUser>>,
@@ -777,7 +795,11 @@ impl IdpPluginClient for FakeIdpPlugin {
             let Some(scope) = guard.get(&req.tenant_context.tenant_id) else {
                 return Ok(Page::empty(u64::from(req.pagination.top())));
             };
-            match req.user_id_filter {
+            // The integration harness only exercises the canonical
+            // `$filter = id eq <uuid>` point-lookup shape (via
+            // `ListUsersQuery::with_id`); anything else is treated as
+            // "no filter, return all".
+            match extract_top_level_id_eq(req.filter.as_ref()) {
                 Some(uid) => scope.get(&uid).cloned().into_iter().collect(),
                 None => scope.values().cloned().collect(),
             }

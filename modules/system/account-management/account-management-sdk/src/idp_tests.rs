@@ -95,11 +95,7 @@ async fn deprovision_user_default_impl_returns_unsupported_operation() {
 #[tokio::test]
 async fn list_users_default_impl_returns_unsupported_operation() {
     let s = Stub;
-    let req = IdpListUsersRequest {
-        tenant_context: sample_tenant_context(),
-        user_id_filter: None,
-        pagination: IdpUserPagination::default(),
-    };
+    let req = IdpListUsersRequest::new(sample_tenant_context(), IdpUserPagination::default());
     let err = s
         .list_users(&sample_security_context(), &req)
         .await
