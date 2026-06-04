@@ -118,7 +118,10 @@ fn validate_membership_type_code_accepts_rg_prefixed() {
 fn validate_membership_type_code_rejects_empty() {
     let result = validation::validate_membership_type_code("");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::Validation { .. }
+    ));
 }
 
 #[test]
@@ -127,7 +130,10 @@ fn validate_membership_type_code_rejects_trailing_wildcard_after_tilde() {
     // stores a SMALLINT FK to a concrete registered type, not a pattern.
     let result = validation::validate_membership_type_code("gts.cf.core.rg.type.v1~*");
     assert!(result.is_err(), "Expected err, got {result:?}");
-    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::Validation { .. }
+    ));
 }
 
 #[test]
@@ -135,21 +141,30 @@ fn validate_membership_type_code_rejects_trailing_wildcard_after_dot() {
     // `gts.cf.*` -- a wildcard pattern, rejected like any other wildcard.
     let result = validation::validate_membership_type_code("gts.cf.*");
     assert!(result.is_err(), "Expected err, got {result:?}");
-    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::Validation { .. }
+    ));
 }
 
 #[test]
 fn validate_membership_type_code_rejects_malformed_gts_path() {
     let result = validation::validate_membership_type_code("not-a-gts-path");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::Validation { .. }
+    ));
 }
 
 #[test]
 fn validate_membership_type_code_rejects_mid_string_wildcard() {
     let result = validation::validate_membership_type_code("gts.cf.*.user.v1~");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::Validation { .. }
+    ));
 }
 
 // ── validate_metadata_schema ────────────────────────────────────────────
