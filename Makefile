@@ -322,8 +322,9 @@ security: deny fips-policy
 # Generate OpenAPI spec from running cf-gears-example-server
 openapi:
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
+	@cargo build --bin cf-gears-example-server $(E2E_ARGS)
 	@echo "Starting cf-gears-example-server to generate OpenAPI spec..."
-	@$(call start_server_and_wait,cargo run --bin cf-gears-example-server $(E2E_ARGS) -- --config config/quickstart.yaml,$(OPENAPI_URL),300) && \
+	@$(call start_server_and_wait,target/debug/cf-gears-example-server --config config/quickstart.yaml,$(OPENAPI_URL),300) && \
 	echo "Fetching OpenAPI spec..." && \
 	mkdir -p $$(dirname "$(OPENAPI_OUT)") && \
 	curl -fsS "$(OPENAPI_URL)" -o "$(OPENAPI_OUT)" && \
