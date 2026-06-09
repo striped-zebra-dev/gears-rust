@@ -35,6 +35,8 @@ COVERAGE_THRESHOLD = 80
 MIN_COVERAGE_FREE_SPACE_GIB = 5
 
 E2E_SERVER_FEATURES = read_e2e_features(PROJECT_ROOT)
+E2E_SERVER_PACKAGE = "cf-gears-example-server"
+E2E_SERVER_BINARY = "cf-gears-example-server"
 
 # Local coverage should not require Docker-backed DB containers.
 # These tests are covered in dedicated DB/integration pipelines.
@@ -723,15 +725,17 @@ def get_llvm_cov_env():
 
 def build_instrumented_server(env, target_dir: Path):
     step(
-        "Building cf-gears-server with coverage instrumentation "
+        f"Building {E2E_SERVER_BINARY} with coverage instrumentation "
         f"(features: {E2E_SERVER_FEATURES})"
     )
     run_cmd(
         [
             "cargo",
             "build",
+            "--package",
+            E2E_SERVER_PACKAGE,
             "--bin",
-            "cf-gears-server",
+            E2E_SERVER_BINARY,
             "--features",
             E2E_SERVER_FEATURES,
         ],
@@ -741,7 +745,7 @@ def build_instrumented_server(env, target_dir: Path):
 
 
 def start_instrumented_server(config_file, output_dir, port=None):
-    """Start the cf-gears-server with coverage instrumentation.
+    """Start the e2e server with coverage instrumentation.
 
     Args:
         config_file: Path to config file
@@ -749,7 +753,7 @@ def start_instrumented_server(config_file, output_dir, port=None):
         port: Optional port override (parsed from config if None)
 
     Returns:
-        tuple: (server_process, log_file, actual_port)
+        tuple: (server_process, log_file, actual_port, log_fp)
     """
     if port is None:
         port = parse_bind_addr_port(config_file)
@@ -759,7 +763,7 @@ def start_instrumented_server(config_file, output_dir, port=None):
 
     # Create output directory and log file
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = output_dir / "cf-gears-server.log"
+    log_file = output_dir / f"{E2E_SERVER_BINARY}.log"
 
     step(
         f"Starting server with coverage instrumentation "
@@ -777,7 +781,7 @@ def start_instrumented_server(config_file, output_dir, port=None):
 
     build_instrumented_server(env2, target_dir)
 
-    server_bin = find_binary(target_dir, "debug", "cf-gears-server")
+    server_bin = find_binary(target_dir, "debug", E2E_SERVER_BINARY)
     if not server_bin.exists():
         print(f"ERROR: Instrumented server binary not found at: {server_bin}")
         sys.exit(1)
@@ -814,7 +818,7 @@ def start_instrumented_server(config_file, output_dir, port=None):
         log_fp.close()
         raise
 
-    return server_process, log_file, port
+    return server_process, log_file, port, log_fp
 
 
 def run_e2e_tests(base_url, test_filter=None):
