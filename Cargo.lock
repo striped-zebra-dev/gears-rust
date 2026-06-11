@@ -1524,6 +1524,7 @@ dependencies = [
  "anyhow",
  "calculator",
  "calculator-gateway",
+ "cf-chat-engine",
  "cf-gears-account-management",
  "cf-gears-api-gateway",
  "cf-gears-authn-resolver",
