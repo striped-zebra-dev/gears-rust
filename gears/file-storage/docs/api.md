@@ -110,17 +110,38 @@ never mutated in place; a replacement is always a new version + a pointer swap.
 - **Ed25519, stateless.** The control plane signs with the private key (sole minter); the sidecar verifies with the
   public key. No DB lookup to verify. No per-URL revocation — emergency revocation is the platform auth module's token
   revocation. P1 uses one static keypair (no rotation; keyset + rotation is P2).
-- **Parameters** (query, `X-FS-*`): `X-FS-Algorithm=Ed25519`, `X-FS-KeyId`, `X-FS-Expires=<unix>`, `X-FS-Op`, resource
-  (`X-FS-FileId`, `X-FS-ContentId`/`X-FS-VersionId`, `X-FS-BackendId`), constraints (`X-FS-Ip`, `X-FS-Tok-<claim>`),
-  baked response headers (`X-FS-Rh-<name>`), and `X-FS-Signature`.
+- **Parameters** (query, `X-FS-*`): `X-FS-Algorithm=Ed25519`, `X-FS-Expires=<unix>` (exp), `X-FS-Op`, the version pin
+  `X-FS-ContentId` (download; `X-FS-VersionId` for a version-specific URL), constraints (`X-FS-Ip`, `X-FS-Tok-<claim>`,
+  and upload-only `X-FS-MaxSize`/`X-FS-ExactSize`, `X-FS-ExpectedHash`; P2: `X-FS-MaxRate`, `X-FS-MaxConns`), baked
+  response headers (`X-FS-Rh-<name>`), and `X-FS-Signature`. `file_id` is the URL **path**, not a param; `backend_id`,
+  path, and size are **not** in the URL — the sidecar resolves them from the version row. P1 carries no key id (single
+  static key; `X-FS-KeyId` returns in P2 with rotation).
 - **Canonicalization**: signature covers `method` + `host` + `path` + every `X-FS-*` except `X-FS-Signature`, sorted
-  and percent-encoded. `host` is signed (no cross-sidecar replay); signing all params means a client cannot add,
-  remove, or weaken a constraint.
-- **Not signed**: `Range`, conditional headers, and the `PUT` body — so one signed download URL serves many ranges,
-  and `PUT` body integrity is checked by the hash at bind.
-- **Constraints (AND)**: `exp` (required); optional `ip`/CIDR; optional token-claim predicates (`typ=user`,
-  `sub=<id>`, `tenant_id=<id>`, …). A predicate requires a valid platform JWT, which the sidecar validates and matches.
-  "Available to everyone for 5 minutes" = only `exp`, no token.
+  and percent-encoded. `host` is signed (no cross-sidecar replay). The **operation is signed** both as `method` and as
+  `X-FS-Op`, and the sidecar checks they match — a download URL cannot upload, or vice versa. Signing all params means
+  a client cannot add, remove, or weaken a constraint.
+- **Not signed**: `Range`, conditional headers, and the `PUT` body — so one signed download URL serves many ranges, and
+  `PUT` body integrity is enforced by the size/hash constraints during the stream and by the hash at bind.
+- **Constraints (AND-combined; all optional except `exp`)**:
+  | Constraint | Param(s) | Req. | Phase | Applies | Violation |
+  |---|---|---|---|---|---|
+  | expiry | `X-FS-Expires` | yes | P1 | all | `403` |
+  | client address | `X-FS-Ip` | no | P1 | all | `403` |
+  | token claim | `X-FS-Tok-<claim>` | no | P1 | all (needs JWT) | `403` |
+  | operation | `X-FS-Op` | yes | P1 | all | `403` |
+  | max size | `X-FS-MaxSize` | no | P1 | upload | `413` |
+  | exact size | `X-FS-ExactSize` | no | P1 | upload | `413`/`400` |
+  | expected hash | `X-FS-ExpectedHash` = `<alg>:<hex>` | no | P1 | upload | `422` |
+  | max rate | `X-FS-MaxRate` | no | P2 | up/down | throttle |
+  | max connections | `X-FS-MaxConns` | no | P2 | up/down | `429` |
+- **`exp` is mandatory and capped** by config `max_url_ttl` (recommended **7 days**), enforced by the control plane at
+  signing (no `iat` in the URL; the sidecar checks `now ≤ exp`). A token-claim predicate requires a valid platform
+  JWT, which the sidecar validates and matches. "Available to everyone for 5 minutes" = only `exp`, no token.
+- **`X-FS-MaxSize` and `X-FS-ExactSize` are mutually exclusive** (both → `400` at presign / `403` at the sidecar).
+- **`X-FS-ExpectedHash`** `<alg>` must be in the backend allow-list (P1: `SHA-256`); lowercase hex digest; baked by
+  the control plane (may carry a client-supplied value from the presign request).
+- **`X-FS-MaxRate` / `X-FS-MaxConns` are P2** (declared from P1; enforcement P2). Scoped to one `(file_id, op)`;
+  cross-instance coordination across the sidecar fleet is an open P2 design point.
 - **Baked response headers**: the sidecar echoes the `X-FS-Rh-<name>` set verbatim on the served response (e.g.
   `Content-Disposition`, `Content-Type` override, `Cache-Control`) — no control round-trip.
 
@@ -179,14 +200,20 @@ X-FS-Meta-<key>: <value>                               # one header per custom m
   backend deletes; re-`DELETE` of an already-deleted `file_id` returns `404` (idempotent).
 - `206 Partial Content` — successful range read (sidecar).
 - `304 Not Modified` — `If-None-Match` matched the current ETag.
-- `400 Bad Request` — malformed request (invalid JSON, missing required fields, etc.).
-- `403 Forbidden` — authorization denied (control), or signed-URL/constraint/token verification failed (sidecar).
+- `400 Bad Request` — malformed request (invalid JSON, missing required fields); an `X-FS-ExactSize` upload whose
+  final length is short; or a malformed signed URL minted at presign (e.g. both `X-FS-MaxSize` and `X-FS-ExactSize`).
+- `403 Forbidden` — authorization denied (control), or signed-URL verification failed at the sidecar: bad signature,
+  expired (`now > exp`), `ip` mismatch, method ≠ `X-FS-Op`, missing/invalid token or unmatched token-claim predicate,
+  or a malformed (mutually-exclusive) constraint set. (The `max_url_ttl` cap is enforced at signing, not re-checked here.)
 - `404 Not Found` — file or version does not exist.
 - `409 Conflict` — multipart state conflicts (e.g., complete on an aborted upload) (P2).
 - `412 Precondition Failed` — `If-Match` (content ETag) mismatch on bind/delete, or `If-Match-Metadata` mismatch
   against the current `meta_version`. On a bind `412` the response carries the uploaded `version_id` for rebind.
+- `413 Payload Too Large` — upload exceeds the signed `X-FS-MaxSize` / `X-FS-ExactSize` cap (sidecar; aborted mid-stream).
 - `415 Unsupported Media Type` — declared mime does not match magic-bytes detection (sidecar, on upload).
 - `416 Range Not Satisfiable` — a well-formed `Range` that cannot be satisfied against the size (sidecar). An
   unparseable `Range` is **not** a `416` — it is ignored and the full body is served with `200`.
-- `422 Unprocessable Entity` — semantic validation failure (e.g., invalid GTS file type format).
+- `422 Unprocessable Entity` — semantic validation failure (e.g., invalid GTS file type format), or an upload whose
+  content does not match the signed `X-FS-ExpectedHash` (sidecar; not bound).
+- `429 Too Many Requests` — (P2) the signed `X-FS-MaxConns` for this `(file_id, op)` is exceeded.
 - `507 Insufficient Storage` — backend or quota limit exceeded.

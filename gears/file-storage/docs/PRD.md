@@ -880,16 +880,27 @@ The control plane **MUST** issue short-lived **signed URLs** that authorize a si
 - be **stateless** and verifiable by the sidecar without a database lookup, using an asymmetric signature (Ed25519)
   for which the control plane holds the private key (sole issuer) and the sidecar holds only the public key;
 - always point at the sidecar, **never** at a backend-addressable URL (`cpt-cf-file-storage-principle-backend-opacity`);
-- carry an arbitrary set of **AND-combined constraints**: a mandatory expiry, an optional client `ip`/CIDR, and
-  optional predicates over the caller's auth-token claims (e.g. `typ=user`, `sub=<id>`, `tenant_id=<id>`). When a
-  token-claim predicate is present the sidecar **MUST** also validate a real platform token and match the claim;
+- bind the **operation** `op` ∈ {GET, PUT, part} into the signature (also checked against the HTTP method), so a URL
+  cannot be reused for a different operation;
+- carry **AND-combined constraints**, of which only the expiry is mandatory:
+  - **expiry** (`exp`, required) — and it **MUST NOT** exceed a configured maximum lifetime `max_url_ttl` (recommended
+    7 days), enforced by the control plane at signing; the sidecar rejects once `now > exp`;
+  - optional client `ip`/CIDR;
+  - optional predicates over the caller's auth-token claims (e.g. `typ=user`, `sub=<id>`, `tenant_id=<id>`); when one
+    is present the sidecar **MUST** also validate a real platform token and match each claim;
+  - on **upload** URLs, optional content constraints the sidecar enforces during the stream: a size bound — either
+    `max_size` (≤) **or** `exact_size` (==), mutually exclusive — and an `expected_hash` (`<alg>:<hex>`, `<alg>` from
+    the backend allow-list) the uploaded bytes must match;
+  - *(P2)* a `max_rate` (bandwidth) and a `max_conns` (concurrent connections) scoped to a single `(file_id, op)`;
 - be tamper-evident as a whole — a client **MUST NOT** be able to add, remove, or weaken a constraint without
   invalidating the signature;
 - optionally carry a set of response headers the sidecar **MUST** echo verbatim on the served response (e.g.
   `Content-Disposition`, `Content-Type` override, `Cache-Control`), so the sidecar needs no control-plane round-trip.
 
 In P1 a single static signing keypair is used (no per-URL revocation and no key rotation; emergency access revocation
-is the platform auth module's token revocation). Key rotation and a multi-key set are deferred to P2.
+is the platform auth module's token revocation). Key rotation and a multi-key set are deferred to P2, as is enforcement
+of the `max_rate` / `max_conns` constraints (which additionally require coordinating the multi-instance sidecar fleet
+on a shared backend).
 
 **Rationale**: Signed URLs let the control plane delegate the byte transfer to the sidecar without exposing backends
 and without a per-request control round-trip on the data path. AND-combined constraints give per-link access control
@@ -1120,7 +1131,9 @@ signed-URL issuance. It does **not** carry file content — content moves over s
 **Description**: The sidecar's content surface (`GET`/`PUT`/part), addressed only via control-plane-issued signed
 URLs and served from its own domain. Verifies the Ed25519 signature and constraints, validates the platform token
 when a token-claim predicate is present, serves `Range` and conditional requests, and echoes the response headers
-baked into the URL.
+baked into the URL. It holds **no** backend/tenant/user policy or quota state — all such limits (storage quota,
+allowed types, size policy, retention) live in the control plane and are applied at presign; the sidecar enforces only
+the per-URL constraints the signature carries, plus the per-URL connection/rate caps (P2).
 **Breaking Change Policy**: Signed-URL format changes are coordinated with the control plane (shared signing contract).
 
 ### 7.2 External Integration Contracts

@@ -97,11 +97,14 @@ URL) plus one or more data requests against the sidecar.
 
 Signed URLs are **Ed25519, stateless** (S3-presigned-style): the control plane signs with a private
 key and is the **sole minter**; the sidecar verifies with the public key and can never forge a URL.
-Constraints are AND-combined into the signed payload — `exp` (required), optional `ip`/CIDR, and
-optional predicates over token claims (`tok.typ`, `tok.sub`, `tok.tenant_id`, …). In P1 there is one
-static keypair (private in control config, public in sidecar config); rotation/keyset is deferred to
-P2; there is no per-URL revocation — emergency revocation is the platform auth module's token
-revocation, not the URL layer.
+Constraints are AND-combined into the signed payload — `exp` (required, capped at a configured
+`max_url_ttl`, recommended 7 days, enforced by the control plane at signing), optional
+`ip`/CIDR, optional predicates over token claims (`tok.typ`, `tok.sub`, `tok.tenant_id`, …), and — on
+upload URLs — an optional size bound (`max_size` or `exact_size`, mutually exclusive) and
+`expected_hash`. Bandwidth (`max_rate`) and connection (`max_conns`) caps are declared but enforced in
+P2. In P1 there is one static keypair (private in control config, public in sidecar config);
+rotation/keyset is deferred to P2; there is no per-URL revocation — emergency revocation is the
+platform auth module's token revocation, not the URL layer.
 
 ### Consequences
 

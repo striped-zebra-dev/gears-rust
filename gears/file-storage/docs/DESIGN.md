@@ -25,6 +25,8 @@
   - [4.3 Concurrency & Streaming Backpressure](#43-concurrency--streaming-backpressure)
   - [4.4 Quality Attribute Coverage](#44-quality-attribute-coverage)
   - [4.5 Signed-URL signature](#45-signed-url-signature)
+  - [4.6 Worked example (LMS image upload and display)](#46-worked-example-lms-image-upload-and-display)
+  - [4.7 Worked example (multipart upload and resume)](#47-worked-example-multipart-upload-and-resume)
 - [5. Traceability](#5-traceability)
 
 <!-- /toc -->
@@ -134,6 +136,7 @@ See [PRD.md](./PRD.md) §1 "Overview" and §1.3 "Goals":
 | ADR ID                                                | Decision Summary                                                                                                                                                                                       |
 |-------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `cpt-cf-file-storage-adr-sidecar-data-plane`          | Control/data-plane split: the control plane issues signed URLs; the **sidecar** moves all bytes; backends never addressed directly by clients. **Supersedes ADR-0001**                                  |
+| `cpt-cf-file-storage-adr-signed-url-transport`        | Signed-URL fields + signature are carried as discrete `X-FS-*` query parameters (S3 SigV4 query form) — not headers, not an opaque token                                                                |
 | `cpt-cf-file-storage-adr-proxy-content-traffic`       | (Superseded by ADR-0003) Originally: all content traffic transits a single FileStorage monolith                                                                                                        |
 | `cpt-cf-file-storage-adr-content-hash-selection`      | P1 ships the full hash-selection API with allow-list locked to `["SHA-256"]`; P2 expands the allow-list to BLAKE3 + XXH3 alongside multipart upload                                                    |
 
@@ -326,7 +329,7 @@ their credentials requires a restart. Runtime/DB-driven configuration with admin
 | `VersionState`        | Enum `{Pending, Available}`; a version is `Pending` from pre-register until bind, then `Available`                                          |
 | `ContentId`           | The `version_id` currently bound as the file's live content (`File.content_id`); changing it is a pointer swap                              |
 | `ETag`                | Opaque `String` (HTTP-quoted, base64url payload); derived from `(file_id, content_id)`; **MUST NOT** equal `hash_value`                     |
-| `SignedUrl`           | A control-minted Ed25519 token over `(op, file_id, version_id/content_id, backend_id, constraints, response-headers, key_id, exp)` (§4.5)   |
+| `SignedUrl`           | A control-minted Ed25519 token over `(method, host, path, op, content_id/version_id, constraints, response-headers, exp)` — `file_id` is in the path; backend/key-id not in the URL (§4.5) |
 | `ByteRange`           | Parsed `Range` request: `Inclusive(start, end)`, `OpenEnded(start)`, `Suffix(length)`                                                       |
 | `HashPolicy`          | Per-backend hash configuration: `default_algorithm`, `allowed_algorithms`, `selection_rules`. P1: locked to `["SHA-256"]`                   |
 | `BackendCapabilities` | Per-backend feature flags: `multipart_native`, `encryption_native`, `range_native`, `presigned_url_internal` (no `versioning_native` — versioning is FS-level) |
@@ -440,8 +443,9 @@ minter** (holds the private key).
 
 ##### Responsibility scope
 
-- Build the signed payload `(op, file_id, version_id/content_id, backend_id, constraints, response-headers, key_id,
-  exp)` and sign it with the control-plane Ed25519 private key (§4.5)
+- Build the signed payload `(method, host, path=/files/{file_id}, op, content_id/version_id, constraints,
+  response-headers, exp)` and sign it with the control-plane Ed25519 private key (§4.5). `file_id` rides in the path;
+  `backend_id` and key id are not in the URL (single key in P1; backend resolved from the version row)
 - Resolve the target: for download, the file's current `content_id` (or an explicit `version_id`); for upload, allocate
   nothing here (the version is pre-registered by the sidecar at transfer time — see `bind-service`)
 - Attach AND-combined constraints (`exp` required; optional `ip`/CIDR; optional token-claim predicates) and any
@@ -817,8 +821,8 @@ schema, status codes — is documented in **[api.md](./api.md)**. The summary:
   - **Interaction**: `tokio::fs` async file I/O; native range reads via `AsyncSeekExt::seek` + `AsyncReadExt::take`
 - **S3-Compatible Object Storage** (AWS S3, MinIO, Backblaze B2, Wasabi, etc.)
   - **Purpose**: P1 reference driver for production deployments
-  - **Interaction**: `aws-sdk-s3`; native multipart (P2), native Range, optional server-side encryption (P3),
-    optional versioning (P2)
+  - **Interaction**: `aws-sdk-s3`; native multipart (P2), native Range, optional server-side encryption (P3).
+    Backend-native versioning is **not** used — versioning is FileStorage-level (distinct objects + pointer, §3.1)
 
 ### 3.6 Interactions & Sequences
 
@@ -865,7 +869,7 @@ sequenceDiagram
             BA-->>SC: ObjectRef (size, hash)
             SC->>CTL: bind(file_id, version_id, size, hash, If-Match) [on-behalf-of]
             alt CAS ok
-                CTL->>DB: content_id := version_id; version -> available
+                CTL->>DB: content_id := version_id, version -> available
                 CTL-->>SC: 200
                 SC-->>C: 201 + metadata JSON + ETag
             else 412 (content changed since)
@@ -875,7 +879,7 @@ sequenceDiagram
             end
         end
     end
-    Note over SC,BA: Backend object /file_id/version_id is immutable; a new content write is a NEW version + pointer swap.<br/>An upload abandoned before bind leaves a pending version + blob → swept by the P2 cleanup engine.
+    Note over SC,BA: Backend object /file_id/version_id is immutable — a new content write is a NEW version + pointer swap.<br/>An upload abandoned before bind leaves a pending version + blob → swept by the P2 cleanup engine.
     Note over C,CTL: If-Match is checked twice: opportunistically at pre-register (free early-fail, no wasted upload)<br/>and authoritatively at bind (state may change in between). The 412 retry re-binds the existing version_id.
 ```
 
@@ -927,7 +931,7 @@ sequenceDiagram
     participant BA as backend driver
 
     C->>SC: GET signed url (Range: bytes=1048576-2097151)
-    SC->>SC: verify signature; parse Range → ByteRange::Inclusive(start, end)
+    SC->>SC: verify signature, parse Range → ByteRange::Inclusive(start, end)
     alt range unsatisfiable (start ≥ size)
         SC-->>C: 416 + Content-Range: bytes */size
     else
@@ -968,11 +972,11 @@ sequenceDiagram
         CTL->>AZ: check(action=write, resource=gts~<type>~)
         AZ-->>CTL: Allow
         CTL->>MS: apply_merge_patch(file_id, json)
-        MS->>DB: UPDATE files SET ...; UPSERT files_custom_metadata
-        Note over MS,DB: bump meta_version, last_modified_at;<br/>do NOT change content_id or ETag
+        MS->>DB: UPDATE files SET ..., UPSERT files_custom_metadata
+        Note over MS,DB: bump meta_version, last_modified_at,<br/>do NOT change content_id or ETag
         CTL-->>C: 200 + new metadata JSON + headers (ETag unchanged, X-FS-Metadata-Revision bumped)
     end
-    Note over C,CTL: If-Match-Metadata is optional; absent → last-write-wins (back-compat).<br/>Present → lost-update protection keyed on meta_version (emitted as X-FS-Metadata-Revision).
+    Note over C,CTL: If-Match-Metadata is optional — absent → last-write-wins (back-compat).<br/>Present → lost-update protection keyed on meta_version (emitted as X-FS-Metadata-Revision).
 ```
 
 #### Delete (P1)
@@ -1212,8 +1216,8 @@ the union of the ranges is **not** RFC-conformant — it returns bytes the clien
 `Content-Range` — and is explicitly not used.) `multipart/byteranges` is deferred; if introduced later it is a
 backward-compatible upgrade from the `200` fallback.
 
-**Satisfiability check (single range).** Once the sidecar has the version's `size` (carried in the signed-URL context),
-it computes the resolved range:
+**Satisfiability check (single range).** Once the sidecar has the version's `size` (read from the version row it
+resolved by `(file_id, content_id)`), it computes the resolved range:
 
 - `Inclusive(s, e)`: unsatisfiable if `s ≥ size`. End is clamped to `size - 1`
 - `OpenEnded(s)`: unsatisfiable if `s ≥ size`. End is `size - 1`
@@ -1339,36 +1343,360 @@ Concurrency caps:
 
 The technical realization of PRD `cpt-cf-file-storage-fr-signed-urls` and principle
 `cpt-cf-file-storage-principle-signed-urls`. Stateless, à-la S3 presigned: everything is in the URL, verified by
-recomputation, no DB lookup.
+recomputation, no DB lookup. The fields and signature are carried as discrete `X-FS-*` **query parameters** (not
+headers, not an opaque token) — see [ADR-0004](./ADR/0004-cpt-cf-file-storage-adr-signed-url-transport.md) for why
+(bare, shareable URL; canonical S3 SigV4 query form).
 
 **Algorithm.** **Ed25519** (asymmetric). The control plane signs with the private key and is the **sole minter**; the
-sidecar verifies with the public key and can never forge a URL. P1 uses one static keypair (private in control config,
-public in sidecar config); rotation / a multi-key set is P2. There is no per-URL revocation — emergency revocation is
-the platform auth module's token revocation, not the URL layer.
+sidecar verifies with the public key and can never forge a URL. P1 uses **one static keypair** (private in control
+config, public in sidecar config), so **no key id travels in the URL** — the sidecar uses its single key. A key id
+(`X-FS-KeyId`) returns in **P2** with the keyset/rotation (the sidecar picks by id when present, else falls back to the
+single key — backward-compatible). There is no per-URL revocation — emergency revocation is the platform auth module's
+token revocation, not the URL layer.
 
-**Parameters** (query, prefixed `X-FS-*`): `X-FS-Algorithm=Ed25519`, `X-FS-KeyId`, `X-FS-Expires=<unix>`,
-`X-FS-Op=GET|PUT|part`, resource (`X-FS-FileId`, `X-FS-ContentId`/`X-FS-VersionId`, `X-FS-BackendId`), constraints
-(`X-FS-Ip`, `X-FS-Tok-<claim>`), baked response headers (`X-FS-Rh-<name>`), and finally `X-FS-Signature`.
+**Parameters** (query, prefixed `X-FS-*`): `X-FS-Algorithm=Ed25519`, `X-FS-Expires=<unix>` (exp),
+`X-FS-Op=GET|PUT|part`, the version pin `X-FS-ContentId` (download; `X-FS-VersionId` for a version-specific URL),
+constraints (`X-FS-Ip`, `X-FS-Tok-<claim>`, and — upload only — `X-FS-MaxSize`/`X-FS-ExactSize`, `X-FS-ExpectedHash`;
+P2: `X-FS-MaxRate`, `X-FS-MaxConns`), baked response headers (`X-FS-Rh-<name>`), and finally `X-FS-Signature`.
+
+The `file_id` is the URL **path** (`/files/{file_id}`), already covered by the signature — it is **not** duplicated as
+a query param. The **backend, object path, and size are resolved by the sidecar from the version row** (download: by
+`(file_id, content_id)`; upload: returned by control at pre-register) — they are not carried in the URL, both to keep
+it lean and to avoid leaking internal backend identifiers. This is an indexed PK read, **not** a control-plane hop, and
+it is separate from signature verification (which stays a pure, DB-free recomputation).
 
 **Canonical string to sign** = `method` + `host` + `path` + all `X-FS-*` params **except** `X-FS-Signature`, sorted by
 key and percent-encoded (RFC 3986), joined `k=v&…`. **`host` is signed** (prevents replaying a URL against a different
-sidecar). Signing *all* `X-FS-*` (minus the signature itself) means any added, removed, or altered parameter breaks
-verification — so no separate `SignedParams` list is needed, and a client cannot strip or weaken a constraint.
+sidecar). The **operation is signed two ways**: the HTTP `method` is in the canonical string and `X-FS-Op` is a signed
+param; the sidecar additionally checks the request method matches `X-FS-Op`, so a download URL cannot be used to upload
+(or vice versa). Signing *all* `X-FS-*` (minus the signature itself) means any added, removed, or altered parameter
+breaks verification — so no separate `SignedParams` list is needed, and a client cannot strip or weaken a constraint.
 
 **Not signed:** the `Range` header (varies per request — kept free for random access), conditional headers, and the
-`PUT` body (byte integrity is verified by the hash at bind, not the URL). Consequence: a signed `PUT` URL can be
-replayed with different bytes until `exp` → that only creates an orphan version/blob (swept by the P2 cleanup engine);
-acceptable.
+`PUT` body (byte integrity is verified by the hash/size constraints during the stream and by the hash at bind, not by
+signing the body). Consequence: a signed `PUT` URL can be replayed with different bytes until `exp` → that only
+creates an orphan version/blob (swept by the P2 cleanup engine); acceptable.
 
-**Constraints (AND-combined):** `exp` (required); optional `ip`/CIDR; optional predicates over the caller's auth-token
-claims (`tok.typ=user`, `tok.sub=<id>`, `tok.tenant_id=<id>`, any claim).
+**Constraints.** All are AND-combined and live inside the signed payload (tamper-evident as a whole). Every signed URL
+carries **`exp`**; everything else is optional.
 
-**Verification (sidecar).** Recompute the signature by `X-FS-KeyId`, check it; check `exp`; check `ip` if present; for
-each token-claim predicate **require a valid platform JWT**, validate it the standard way, and match `claim == value`
-(all AND). "Available to everyone for 5 minutes" = only `exp`, no token needed. Any failure → `403`.
+| Constraint | Param(s) | Required | Phase | Applies to | Violation |
+|---|---|---|---|---|---|
+| Expiry | `X-FS-Expires` | **yes** | P1 | all | `403` — past `exp` |
+| Client address | `X-FS-Ip` (addr/CIDR) | no | P1 | all | `403` |
+| Token-claim predicate | `X-FS-Tok-<claim>` | no | P1 | all (requires JWT) | `403` |
+| Operation | `X-FS-Op` (+ `method`) | **yes** | P1 | all | `403` |
+| Max size | `X-FS-MaxSize` | no | P1 | upload | `413` (mid-stream) |
+| Exact size | `X-FS-ExactSize` | no | P1 | upload | `413` over / `400` under |
+| Expected hash | `X-FS-ExpectedHash` (`<alg>:<hex>`) | no | P1 | upload | `422` |
+| Max rate | `X-FS-MaxRate` (bytes/s) | no | **P2** | up/down | throttled to ≤ rate |
+| Max connections | `X-FS-MaxConns` | no | **P2** | up/down | `429` |
+
+- **`exp` is mandatory and capped.** It MUST NOT be further out than the configured `max_url_ttl` (recommended **7
+  days**). The cap is enforced by the **control plane at signing** (it refuses to mint a longer URL) — there is no
+  `iat` in the URL, so the sidecar simply rejects when `now > exp`. "Available to everyone for 5 minutes" = only `exp`,
+  no token.
+- **`X-FS-MaxSize` and `X-FS-ExactSize` are mutually exclusive** — both present is a contradiction: the control plane
+  refuses to mint it (`400` at presign), and the sidecar rejects it as malformed (`403`).
+- **`X-FS-ExpectedHash`**: `<alg>` MUST be in the backend's allow-list (P1: `SHA-256`); the digest is lowercase hex.
+  The value is baked by the control plane (it may originate from a client-supplied value in the presign request).
+- **`X-FS-MaxRate` / `X-FS-MaxConns` are P2.** The param shape is declared from P1 (forward-compat) but enforcement is
+  P2. Both are scoped to **a single `(file_id, op)`**. Enforcing them across the multi-instance sidecar fleet (several
+  sidecars on one backend) needs cross-instance coordination (global counter/shaper, per-backend sharding, …); the
+  approach is an open P2 design point, deferred to the P2 FEATURE.
+
+**Verification (sidecar).** On each request the sidecar:
+
+1. recomputes the signature over the canonical string using its public key (P1: the single key; P2: the one named by
+   `X-FS-KeyId`); `403` on mismatch;
+2. checks the operation: HTTP method matches `X-FS-Op`; `403` otherwise;
+3. checks expiry: `now ≤ exp`; `403` otherwise (the `max_url_ttl` cap was already enforced at signing);
+4. checks `X-FS-Ip`/CIDR if present; `403` on mismatch;
+5. **token validation** — *if and only if* the URL carries one or more `X-FS-Tok-<claim>` predicates, requires a valid
+   platform JWT, validates it the standard way, and matches each `claim == value` (all AND); `403` on any miss;
+6. **resolves the target object** from the version row — download: `(file_id from path, content_id)` → backend,
+   path, size; upload: the backend/path returned by control at pre-register (`404` if the version is gone);
+7. **on upload**, enforces the content constraints on the streaming path (the same pass that runs SHA-256 + magic-bytes):
+   `X-FS-MaxSize` → abort `413` the moment the cap is exceeded; `X-FS-ExactSize` → abort `413` if exceeded, or `400` if
+   the final length is short; `X-FS-ExpectedHash` → compare the computed digest at end-of-stream, `422` on mismatch.
+   Any upload-constraint failure aborts before bind and best-effort deletes the partial object.
+
+Authorization decisions stay on the control plane (made at presign, encoded into the URL); the sidecar is a pure
+enforcer of what the signed URL and the token assert.
+
+**No policy or quota in the data plane.** Every limit scoped to a **backend, tenant, or user** — storage quota,
+allowed-types / size policy, retention, per-owner caps — lives in the **control plane** (P2) and is evaluated **at
+presign**; if a request violates such a policy the control plane simply does not mint a URL (or bakes a tighter
+constraint, e.g. `MaxSize`, into it). The sidecar holds **none** of this state and makes **no** tenant/user/backend
+decision: it accepts anything that is validly signed and not expired, and enforces only the **per-URL** constraints the
+signature carries. The sole runtime limits it computes itself are the **per-URL connection/rate caps** (`MaxConns` /
+`MaxRate`, P2) scoped to a single `(file_id, op)`. This keeps the data plane stateless and policy-free, and concentrates
+all governance where the authoritative tenant/user/backend data already is.
 
 **Keys = the control↔sidecar sync.** Distributing the public key (and the backend registry/config) is the only state
 the control plane "synchronizes" to the sidecar; metadata is not replicated — the sidecar reads the shared DB via SDK.
+
+**Signing locality & cost.** Minting a signed URL requires the **private key**, which only the control plane holds.
+An Ed25519 signature is a CPU-only operation of tens of microseconds — there is no DB hit and no network in the
+signing step itself. Two cases:
+
+- **SDK in-process (private key local to the caller's control instance):** signing is a direct local call, so a caller
+  can mint **many URLs at once essentially for free** — e.g. 100 presigned URLs in single-digit milliseconds, no
+  round-trips. Useful for listing/galleries that need a signed download URL per item.
+- **Control plane as an external service (SDK over REST):** each presign is a control request, so to mint many URLs
+  the caller **batches** them into a single request (the control plane signs them all in one in-memory pass and
+  returns the set). That keeps bulk presigning to one round-trip — still fast.
+
+### 4.6 Worked example (LMS image upload and display)
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-design-worked-example`
+
+A concrete end-to-end walkthrough tying together presign, the sidecar transfer, pre-register, bind, and a later
+download — a student uploading a screenshot into an LMS assessment, then that image rendering in a browser. Example
+hosts: control plane `https://api.example.com/api/file-storage/v1`, sidecar `https://fs-data.example.com`. IDs are
+shortened for readability.
+
+**Who talks to whom.** The student / browser **never calls the FileStorage control plane (FSCP) directly.** For every
+control operation it goes through the **LMS API**, which runs its own business logic and validation first — e.g. the
+assessment is open, the attempt belongs to this student, attempt/upload limits are not exceeded, the file type and size
+are allowed for *this* question — and only then **proxies** the request into FSCP via the FileStorage SDK
+(server-to-server, on behalf of the student). FSCP authorizes independently on the GTS type; the LMS checks are an
+additional, domain-specific layer on top. The **only** FileStorage endpoint the browser touches directly is the
+**sidecar**, and only with a signed URL the LMS handed back — so the byte transfer is direct (no LMS in the data path)
+while every control decision stays mediated by the LMS.
+
+#### Phase 1 — Upload
+
+1. The student picks `answer.png` in the LMS assessment UI. The LMS frontend asks the LMS backend (a gear) for an
+   upload target, passing the file's `name`, `mime_type`, and `gts_file_type` (**required**) plus, **optionally**, the
+   `size` and content `hash` it already knows. The optional values let the control plane tighten the signed URL: a
+   declared `size` is baked as the `ExactSize` constraint (otherwise a policy-driven `MaxSize` applies), and a declared
+   `hash` is baked as `ExpectedHash` — so the sidecar verifies the upload against exactly what the client committed up
+   front. (`mime_type` is always required because the sidecar validates it against the content's magic bytes.)
+2. The LMS backend runs its own business checks first (assessment open, attempt ownership, limits, allowed type/size
+   for this question), then **proxies** to FSCP via the FileStorage **SDK** (on behalf of the student). The control
+   plane runs its own authz (`write` on `gts.cf.fstorage.file.type.v1~x.lms.assessment.image.v1~`), creates the
+   `files` row (`content_id = NULL`), and mints a **signed PUT URL** to the sidecar with constraints baked in (15-min
+   `exp`, 10 MiB `MaxSize`, `ExpectedHash`, owner-token predicate):
+
+   ```http
+   POST https://api.example.com/api/file-storage/v1/files
+   Authorization: Bearer <LMS app token, on-behalf-of stu_91a2>
+   Content-Type: application/json
+
+   { "name": "answer.png", "gts_file_type": "gts.cf.fstorage.file.type.v1~x.lms.assessment.image.v1~",
+     "owner_kind": "user", "owner_id": "stu_91a2", "mime_type": "image/png" }
+   ```
+   ```json
+   201 Created
+   { "file_id": "3b1e8c4a",
+     "upload_url": "https://fs-data.example.com/files/3b1e8c4a?X-FS-Algorithm=Ed25519&X-FS-Expires=1750000900&X-FS-Op=PUT&X-FS-MaxSize=10485760&X-FS-ExpectedHash=SHA-256:b94d27...&X-FS-Tok-typ=user&X-FS-Tok-sub=stu_91a2&X-FS-Signature=Q2l0eV..." }
+   ```
+
+   `upload_url` query parameters (host `fs-data.example.com`, path `/files/3b1e8c4a` — `file_id` is the path, not a param):
+
+   | Parameter | Value | Meaning |
+   |---|---|---|
+   | `X-FS-Algorithm` | `Ed25519` | signature algorithm (P1: single key, no key id) |
+   | `X-FS-Expires` | `1750000900` | exp — +15 min (cap `max_url_ttl` enforced at signing) |
+   | `X-FS-Op` | `PUT` | bound operation (also checked against the HTTP method) |
+   | `X-FS-MaxSize` | `10485760` | upload constraint — ≤ 10 MiB (policy default; no client-declared size) |
+   | `X-FS-ExpectedHash` | `SHA-256:b94d27...` | upload constraint — content must hash to this (client-committed) |
+   | `X-FS-Tok-typ` | `user` | token-claim predicate — caller's `typ` must equal `user` |
+   | `X-FS-Tok-sub` | `stu_91a2` | token-claim predicate — caller's `sub` must equal the student |
+   | `X-FS-Signature` | `Q2l0eV...` | Ed25519 signature over `method + host + path + all other X-FS-*` |
+
+   (No `backend_id` in the URL — control picks the backend and returns it to the sidecar at pre-register.)
+
+3. The LMS hands `upload_url` to the browser, which uploads the bytes straight to the **sidecar** (no extra headers
+   needed beyond the platform JWT the predicate requires):
+
+   ```http
+   PUT https://fs-data.example.com/files/3b1e8c4a?X-FS-Algorithm=Ed25519&...&X-FS-Signature=Q2l0eV... HTTP/1.1
+   Authorization: Bearer <student JWT>
+   Content-Type: image/png
+   <binary image bytes>
+   ```
+4. The sidecar verifies the Ed25519 signature + constraints: `exp` not passed, method matches `X-FS-Op=PUT`, the JWT
+   is valid and `typ=user`, `sub=stu_91a2`. (It applies no tenant/user/backend quota or policy — those were already
+   checked by the LMS and the control plane at presign; see §4.5 "No policy or quota in the data plane".)
+5. Before writing bytes, the sidecar **pre-registers** the version via the SDK (on-behalf-of `stu_91a2`); the control
+   plane inserts a `pending` `file_versions` row and allocates `version_id = 7d9f2b10`, object path
+   `/3b1e8c4a/7d9f2b10`.
+6. The sidecar **starts accepting data**, streaming to the backend while it (a) counts bytes against `MaxSize`
+   (aborts `413` if exceeded), (b) sniffs magic bytes vs `image/png` (aborts `415` on mismatch), (c) runs SHA-256.
+7. At end-of-stream the sidecar checks the digest against `ExpectedHash` (`422` on mismatch), then **binds**:
+   `POST /files/3b1e8c4a/bind` (on-behalf-of) sets `content_id := 7d9f2b10`, flips the version to `available`
+   under optimistic CAS. (First content, so no `If-Match` precondition.)
+8. The sidecar returns `201` to the browser; the LMS stores `file_id = 3b1e8c4a` on the assessment answer. Total: one
+   control request + one data request.
+
+> If a concurrent write had moved `content_id` between pre-register and bind, step 7 returns `412` with `version_id =
+> 7d9f2b10`; the client replays `POST /files/3b1e8c4a/bind` with the fresh `If-Match` — no re-upload.
+
+#### Phase 2 — Display in the browser
+
+9. The grader opens the assessment. The LMS backend asks the control plane for a download URL (authz `read`,
+   on-behalf-of the grader), pinning the current `content_id` and baking the response headers it wants the sidecar to
+   echo (inline `image/png`, week-long cache):
+
+   ```http
+   GET https://api.example.com/api/file-storage/v1/files/3b1e8c4a/download-url
+   Authorization: Bearer <LMS app token, on-behalf-of grader>
+   ```
+   ```json
+   200 OK
+   { "etag": "\"Ox...c4a7d9f\"",
+     "download_url": "https://fs-data.example.com/files/3b1e8c4a?X-FS-Algorithm=Ed25519&X-FS-Expires=1750608400&X-FS-Op=GET&X-FS-ContentId=7d9f2b10&X-FS-Rh-Content-Type=image%2Fpng&X-FS-Rh-Content-Disposition=inline&X-FS-Rh-Cache-Control=private%2C%20max-age%3D604800&X-FS-Signature=bDc4Z2..." }
+   ```
+
+   `download_url` query parameters (host `fs-data.example.com`, path `/files/3b1e8c4a` — `file_id` is the path):
+
+   | Parameter | Value | Meaning |
+   |---|---|---|
+   | `X-FS-Algorithm` | `Ed25519` | signature algorithm (P1: single key, no key id) |
+   | `X-FS-Expires` | `1750608400` | exp — +7 days (cap `max_url_ttl` enforced at signing) |
+   | `X-FS-Op` | `GET` | bound operation (checked against the HTTP method) |
+   | `X-FS-ContentId` | `7d9f2b10` | **pins this version** — stable, cacheable; "latest" = re-presign. The sidecar resolves backend/path/size from this version row |
+   | `X-FS-Rh-Content-Type` | `image/png` | response header echoed verbatim |
+   | `X-FS-Rh-Content-Disposition` | `inline` | response header — render in page (vs `attachment`) |
+   | `X-FS-Rh-Cache-Control` | `private, max-age=604800` | response header — week-long client/CDN cache |
+   | `X-FS-Signature` | `bDc4Z2...` | Ed25519 signature over `method + host + path + all other X-FS-*` |
+
+   No upload-only constraints here (`MaxSize`/`ExactSize`/`ExpectedHash` are PUT-only); this download URL also carries
+   no `ip` or token-claim predicate, so it is usable by anyone who holds it until `exp` — see the domain/auth note below.
+
+10. The LMS drops that URL straight into the page — it is a **bare, shareable URL** (ADR-0004), so no JS/header glue:
+
+    ```html
+    <img src="https://fs-data.example.com/files/3b1e8c4a?...&X-FS-Op=GET&X-FS-ContentId=7d9f2b10&...&X-FS-Signature=bDc4Z2...">
+    ```
+11. The browser `GET`s the sidecar URL directly. The sidecar verifies the signature, streams the bytes from
+    `/3b1e8c4a/7d9f2b10`, and emits the baked headers: `Content-Type: image/png`, `Content-Disposition: inline`,
+    `Cache-Control: private, max-age=604800`, plus `ETag`, `Accept-Ranges: bytes`. The image **renders inline** in the
+    browser; the CDN may cache it for the URL's lifetime.
+12. **Automatic download** is the same call with one baked header changed at presign — `X-FS-Rh-Content-Disposition=
+    attachment%3B%20filename%3D%22answer.png%22` — so the browser saves the file instead of rendering it.
+13. **Large media (random access).** If the object were a large video instead of a PNG, the same single signed URL
+    serves **arbitrary-offset reads**: a `<video>` element (or a downloader) seeks by issuing `Range` requests against
+    it, and the sidecar answers each with `206 Partial Content` (§4.1). Because the `Range` header is not part of the
+    signature, one presigned URL covers the whole scrub/resume session until `exp` — no re-presign per seek.
+
+**Sidecar domain placement & auth (deployment choice).** Where the sidecar lives relative to the app determines how the
+browser authenticates to it:
+
+- **Same site as the app** — the sidecar is a **subdomain** (`fs-data.app.example.com`) or even a **sub-path**
+  (`app.example.com/fs-data/...`) of the app's domain. Then the platform **cookies / tokens are sent automatically** by
+  the browser, so a token-claim predicate (`X-FS-Tok-*`) can be enforced on plain `<img>`/`<video>`/navigation with no
+  extra glue. Recommended where possible.
+- **Different domain** — the browser will **not** auto-attach the app's cookies/token. Two options, chosen by the
+  operator/configurator: **(a)** authenticate the user on the sidecar domain first (so it obtains a token) and keep the
+  token-claim predicates; or **(b)** issue **short-lived URLs with no token predicate** (signature + `exp` + optional
+  `ip` only), accepting that whoever holds the URL can use it until it expires. The example above uses (b).
+
+This is purely a deployment/configuration decision; the signed-URL contract is identical either way.
+
+### 4.7 Worked example (multipart upload and resume)
+
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-design-worked-example-multipart`
+
+Multipart is **P2** (`cpt-cf-file-storage-fr-multipart-upload`); this walks the same scenario style as §4.6 for a large
+file, then the interesting case: the user uploads a few parts, **gets logged out, hours pass, logs back in, and
+resumes** without re-uploading what already landed. Same hosts as §4.6. The student is uploading a 320 MiB
+`lecture.mp4` recording into the LMS.
+
+#### Phase A — Initiate (server-authoritative plan)
+
+1. The browser tells the LMS it wants to upload a 320 MiB video. The LMS runs its business checks and **proxies** to
+   FSCP via the SDK (on behalf of the student), passing the desired parameters (total size, preferred part size,
+   concurrency):
+
+   ```http
+   POST https://api.example.com/api/file-storage/v1/files/9c2a4f10/multipart
+   Authorization: Bearer <LMS app token, on-behalf-of stu_91a2>
+
+   { "total_size": 335544320, "preferred_part_size": 67108864, "concurrency": 4, "mime_type": "video/mp4" }
+   ```
+2. The control plane authorizes (`write`), allocates `version_id = 5e0db7a2`, **pre-registers** a `pending` version,
+   and asks the sidecar to begin the multipart session — which (on a `multipart_native` backend) calls
+   `CreateMultipartUpload` and records `upload_id = u7f1b2c3` with a backend handle. The control plane returns the
+   **exact, server-authoritative parts plan** plus one **signed PUT URL per part**:
+
+   ```json
+   200 OK
+   { "file_id": "9c2a4f10", "version_id": "5e0db7a2", "upload_id": "u7f1b2c3",
+     "part_size": 67108864, "parts": [
+       { "part": 1, "offset": 0,         "size": 67108864, "url": "https://fs-data.example.com/files/9c2a4f10/multipart/u7f1b2c3/parts/1?X-FS-Algorithm=Ed25519&X-FS-Expires=1750007200&X-FS-Op=part&X-FS-Signature=cccp1A..." },
+       { "part": 2, "offset": 67108864,  "size": 67108864, "url": ".../parts/2?...&X-FS-Expires=1750007200&X-FS-Op=part&X-FS-Signature=cccp2B..." },
+       { "part": 3, "offset": 134217728, "size": 67108864, "url": ".../parts/3?...&X-FS-Signature=cccp3C..." },
+       { "part": 4, "offset": 201326592, "size": 67108864, "url": ".../parts/4?...&X-FS-Signature=cccp4D..." },
+       { "part": 5, "offset": 268435456, "size": 67108864, "url": ".../parts/5?...&X-FS-Signature=cccp5E..." } ] }
+   ```
+   Each part URL is signed exactly like §4.5: `op=part`, the `file_id`/`upload_id`/part number ride in the **path**
+   (`/files/9c2a4f10/multipart/u7f1b2c3/parts/3`, all signed), and a short `X-FS-Expires` (here ~1 hour). Server-chosen
+   part boundaries are aligned to the BLAKE3 tree so the subtree hashes combine cleanly at completion.
+
+#### Phase B — Upload parts (with durable per-part state)
+
+3. The browser uploads parts in parallel (up to the `concurrency` hint), each straight to the **sidecar**:
+   `PUT .../parts/1`, `PUT .../parts/2`, `PUT .../parts/3`. For each part the sidecar verifies the signature, streams
+   the bytes to the backend (`PutPart` on a native backend, or an offset-write into the single new-version object
+   otherwise), computes the part's **BLAKE3 subtree hash**, validates magic bytes on **part 1** (`video/mp4`), and
+   **persists the part state in the shared DB** (`multipart_upload_parts`: `backend_etag`/offset, `size`, `part_hash`).
+4. Say parts **1, 3, 4** land successfully (rows written) but parts **2 and 5** fail mid-flight, then the student's
+   session breaks — they are logged out and walk away. Note the gap is **non-contiguous** (a middle part and the last
+   part are missing). Crucially, the durable part rows for 1, 3, 4 survive in the DB, and the `multipart_uploads` row
+   stays `in_progress` with its own `expires_at` (a server-side grace window, e.g. 24 h — independent of the per-part
+   URL `exp`).
+
+#### Phase C — Hours later: re-login and resume
+
+5. Hours pass. **Two clocks matter**, and they are different:
+   - the per-part **signed-URL `exp`** (~1 h) — now expired, so the old part URLs are unusable;
+   - the **multipart session `expires_at`** (~24 h grace) — *not* yet reached, so the session and parts 1, 3, 4 are intact.
+6. The student logs back in (fresh platform JWT). The LMS re-runs its business checks (is the assessment still open, is
+   this still the student's attempt) and, if still allowed, asks FSCP to **resume** by introspecting the session:
+
+   ```http
+   GET https://api.example.com/api/file-storage/v1/files/9c2a4f10/multipart/u7f1b2c3
+   Authorization: Bearer <LMS app token, on-behalf-of stu_91a2>
+   ```
+   ```json
+   200 OK
+   { "upload_id": "u7f1b2c3", "state": "in_progress", "part_size": 67108864,
+     "uploaded": [ { "part": 1, "size": 67108864 }, { "part": 3, "size": 67108864 }, { "part": 4, "size": 67108864 } ],
+     "missing": [
+       { "part": 2, "offset": 67108864,  "size": 67108864, "url": "https://fs-data.example.com/files/9c2a4f10/multipart/u7f1b2c3/parts/2?X-FS-Algorithm=Ed25519&X-FS-Expires=1750090000&X-FS-Op=part&X-FS-Signature=rEsuM2..." },
+       { "part": 5, "offset": 268435456, "size": 67108864, "url": ".../parts/5?...&X-FS-Expires=1750090000&X-FS-Op=part&X-FS-Signature=rEsuM5..." } ] }
+   ```
+   The control plane reads `multipart_upload_parts`, reports parts **1, 3, 4 as already uploaded**, and mints **fresh
+   signed URLs only for the missing parts 2 and 5** (new `exp`) — the missing set can be any subset, not just a
+   trailing range. Parts 1, 3, 4 are **not** re-uploaded — that is the resumability guarantee
+   (`cpt-cf-file-storage-fr-multipart-upload`).
+7. The browser uploads only parts 2 and 5 with the fresh URLs (same durable-state path as Phase B).
+
+#### Phase D — Complete
+
+8. The client finalizes:
+
+   ```http
+   POST https://api.example.com/api/file-storage/v1/files/9c2a4f10/multipart/u7f1b2c3/complete
+   If-Match: *
+   ```
+   The control plane reads all five `part_hash` rows and **combines them into the BLAKE3 root**, the sidecar runs the
+   backend `CompleteMultipartUpload`, and the control plane **binds** the version (`content_id := 5e0db7a2`,
+   `status = available`) under optimistic CAS — identical to single-shot completion. A bind `412` is retried the same
+   way (re-bind, no re-upload). The `multipart_uploads` row flips to `completed`.
+
+#### The other branch — session already reaped
+
+9. If the student had stayed away **longer than the session `expires_at`** (e.g. > 24 h), the P2 **cleanup engine**
+   would have already reaped the abandoned session: `AbortMultipartUpload` at the backend, the uploaded parts
+   discarded, and the `pending` version + `multipart_upload_parts` rows removed (`cpt-cf-file-storage-fr-orphan-reconciliation`).
+   The resume `GET` then returns `404` (no such upload) — the client must **re-initiate from scratch** (Phase A) and
+   re-upload everything. So the session `expires_at` is exactly the knob that bounds how long a half-finished upload
+   remains resumable; the short per-part URL `exp` only controls how often the client must re-presign, never whether
+   progress is lost.
 
 ## 5. Traceability
 
@@ -1376,6 +1704,7 @@ the control plane "synchronizes" to the sidecar; metadata is not replicated — 
 - **API surface**: [api.md](./api.md)
 - **ADRs**:
   - [ADR-0003: Split the Data Plane into a Signed-URL Sidecar](./ADR/0003-cpt-cf-file-storage-adr-sidecar-data-plane.md) — the active architecture
+  - [ADR-0004: Signed-URL Field & Signature Transport](./ADR/0004-cpt-cf-file-storage-adr-signed-url-transport.md) — discrete `X-FS-*` query params
   - [ADR-0002: Content Integrity Hash — SHA-256 in P1, Configurable in P2](./ADR/0002-cpt-cf-file-storage-adr-content-hash-selection.md)
   - [ADR-0001: Proxy All File Content Traffic Through FileStorage](./ADR/0001-cpt-cf-file-storage-adr-proxy-content-traffic.md) — **superseded by ADR-0003**
 - **Features**: [features/](./features/) (to be created in P2/P3 phases for each declared-only component)
