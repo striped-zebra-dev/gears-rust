@@ -330,7 +330,7 @@ required = true
 [systems.autodetect.artifacts.DESIGN]
 pattern = "DESIGN.md"
 traceability = "DOCS-ONLY"
-required = true
+required = false
 
 [systems.autodetect.artifacts.ADR]
 pattern = "ADR/*.md"
