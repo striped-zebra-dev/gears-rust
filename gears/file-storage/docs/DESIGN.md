@@ -135,9 +135,8 @@ See [PRD.md](./PRD.md) §1 "Overview" and §1.3 "Goals":
 
 | ADR ID                                                | Decision Summary                                                                                                                                                                                       |
 |-------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `cpt-cf-file-storage-adr-sidecar-data-plane`          | Control/data-plane split: the control plane issues signed URLs; the **sidecar** moves all bytes; backends never addressed directly by clients. **Supersedes ADR-0001**                                  |
+| `cpt-cf-file-storage-adr-sidecar-data-plane`          | Control/data-plane split: the control plane issues signed URLs; the **sidecar** moves all bytes; backends never addressed directly by clients (supersedes the prior proxy-all monolith design)          |
 | `cpt-cf-file-storage-adr-signed-url-transport`        | The signed-URL credential is a single **opaque PASETO `v4.public` token**, carried in the query (`?fs-token=`) or a header; its format is private to control + sidecar (others treat it as opaque bytes)      |
-| `cpt-cf-file-storage-adr-proxy-content-traffic`       | (Superseded by ADR-0003) Originally: all content traffic transits a single FileStorage monolith                                                                                                        |
 | `cpt-cf-file-storage-adr-content-hash-selection`      | P1 ships the full hash-selection API with allow-list locked to `["SHA-256"]`; P2 expands the allow-list to BLAKE3 + XXH3 alongside multipart upload                                                    |
 
 ### 1.3 Architecture Layers
@@ -1709,5 +1708,4 @@ resumes** without re-uploading what already landed. Same hosts as §4.6. The stu
   - [ADR-0003: Split the Data Plane into a Signed-URL Sidecar](./ADR/0003-cpt-cf-file-storage-adr-sidecar-data-plane.md) — the active architecture
   - [ADR-0004: Signed-URL Token Format & Transport](./ADR/0004-cpt-cf-file-storage-adr-signed-url-transport.md) — opaque PASETO `v4.public` token, query or header
   - [ADR-0002: Content Integrity Hash — SHA-256 in P1, Configurable in P2](./ADR/0002-cpt-cf-file-storage-adr-content-hash-selection.md)
-  - [ADR-0001: Proxy All File Content Traffic Through FileStorage](./ADR/0001-cpt-cf-file-storage-adr-proxy-content-traffic.md) — **superseded by ADR-0003**
 - **Features**: [features/](./features/) (to be created in P2/P3 phases for each declared-only component)

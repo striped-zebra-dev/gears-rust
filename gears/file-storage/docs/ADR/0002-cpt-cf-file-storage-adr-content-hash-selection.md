@@ -247,7 +247,7 @@ P1 has no multipart upload. The load-bearing argument for BLAKE3 — tree-mode m
 
 - **PRD**: [PRD.md](../PRD.md)
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
-- **ADR-0001**: [Proxy All File Content Traffic Through FileStorage](./0001-cpt-cf-file-storage-adr-proxy-content-traffic.md)
+- **ADR-0003**: [Split the Data Plane into a Signed-URL Sidecar](./0003-cpt-cf-file-storage-adr-sidecar-data-plane.md)
 
 This decision directly addresses the following requirements or design elements:
 
