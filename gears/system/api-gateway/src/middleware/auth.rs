@@ -194,11 +194,13 @@ pub async fn authn_middleware(
 
     match requirement {
         AuthRequirement::None => {
+            log_auth_skipped(req.method(), path.as_str());
             req.extensions_mut().insert(SecurityContext::anonymous());
             next.run(req).await
         }
         AuthRequirement::Required => {
             let Some(token) = extract_bearer_token(req.headers()) else {
+                log_missing_bearer(req.method(), path.as_str());
                 // `instance` / `trace_id` are filled by the canonical
                 // error middleware (`toolkit::api::canonical_error_middleware`)
                 // on the way out — this middleware sits inside its layer.
@@ -216,6 +218,7 @@ pub async fn authn_middleware(
 
             match state.authn_client.authenticate(token).await {
                 Ok(result) => {
+                    log_auth_succeeded(req.method(), path.as_str(), &result.security_context);
                     req.extensions_mut().insert(result.security_context);
                     next.run(req).await
                 }
@@ -223,6 +226,23 @@ pub async fn authn_middleware(
             }
         }
     }
+}
+
+fn log_auth_skipped(method: &Method, path: &str) {
+    tracing::debug!(method = %method, path, "authentication skipped: public route");
+}
+
+fn log_missing_bearer(method: &Method, path: &str) {
+    tracing::debug!(method = %method, path, "authentication failed: missing bearer token");
+}
+
+fn log_auth_succeeded(method: &Method, path: &str, security_context: &SecurityContext) {
+    tracing::debug!(
+        method = %method,
+        path,
+        subject_id = %security_context.subject_id(),
+        "authentication succeeded"
+    );
 }
 
 /// Convert `AuthNResolverError` to a canonical Problem Details response.
