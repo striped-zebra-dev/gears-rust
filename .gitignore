@@ -366,3 +366,6 @@ testing/e2e/logs/
 
 # Cached checkout of the web docs site for `make docs-preview`
 .web-docs-preview/
+
+# Cached checkout of sibling docs sources (e.g. cargo-gears) for `make docs-preview`
+.web-docs-sources/
