@@ -9,6 +9,68 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/constructorfabric/gears-rust/releases/tag/cf-gears-noop-usage-collector-plugin-v0.1.0) - 2026-06-29
+
+### Added
+
+- *(usage-collector)* usage-collector gear with usage emission and query (by @capybutler)
+
+### Contributors
+
+* @capybutler
+
+## [0.1.0](https://github.com/constructorfabric/gears-rust/releases/tag/cf-gears-usage-collector-v0.1.0) - 2026-06-29
+
+### Added
+
+- *(usage-collector)* add permission catalog, tighten authz constraints, fix keyset pagination (by @capybutler)
+- *(usage-collector)* usage-collector gear with usage emission and query (by @capybutler)
+
+### Contributors
+
+* @capybutler
+
+## [0.1.0](https://github.com/constructorfabric/gears-rust/releases/tag/cf-gears-usage-collector-sdk-v0.1.0) - 2026-06-29
+
+### Added
+
+- *(usage-collector)* usage-collector gear with usage emission and query (by @capybutler)
+- *(usage-collector)* add SDK crate; trim spec bloat and rename Metric → UsageType (by @capybutler)
+
+### Contributors
+
+* @capybutler
+
+## [0.1.1](https://github.com/constructorfabric/gears-rust/compare/cf-gears-oidc-authn-plugin-v0.1.0...cf-gears-oidc-authn-plugin-v0.1.1) - 2026-06-29
+
+### Added
+
+- *(security)* add DE0708 no-non-FIPS-hasher lint; replace all direct sha2 usage with FNV-1a (by @mattgarmon)
+
+### Other
+
+- release (by @github-actions[bot]) - #4074
+- preserve non-standard JWT claims + dylint de0708 migration (by @diffora) - #4088
+- per-issuer typ/aud/clock-skew-leeway validation (by @diffora) - #4088
+- release (by @github-actions[bot]) - #4063
+
+### Contributors
+
+* @github-actions[bot]
+* @diffora
+* @mattgarmon
+
+## [0.1.4](https://github.com/constructorfabric/gears-rust/compare/cf-gears-tr-authz-plugin-v0.1.3...cf-gears-tr-authz-plugin-v0.1.4) - 2026-06-29
+
+### Other
+
+- release (by @github-actions[bot]) - #4074
+- release (by @github-actions[bot]) - #4063
+
+### Contributors
+
+* @github-actions[bot]
+
 ## [0.1.0](https://github.com/constructorfabric/gears-rust/releases/tag/cf-gears-noop-usage-collector-plugin-v0.1.0) - 2026-06-28
 
 ### Added
