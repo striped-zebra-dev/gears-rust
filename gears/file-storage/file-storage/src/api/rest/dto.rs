@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use file_storage_sdk::{CustomMetadataEntry, File, FileVersion, OwnerKind};
 
-use crate::domain::service::FileService;
+use crate::domain::etag;
 use crate::infra::backend::BackendCapabilities;
 
 /// One custom-metadata key/value pair.
@@ -44,7 +44,7 @@ pub struct FileDto {
 impl FileDto {
     #[must_use]
     pub fn from_parts(file: File, meta: Vec<CustomMetadataEntry>) -> Self {
-        let etag = FileService::etag_for(&file);
+        let etag = etag::etag_for(&file);
         Self {
             file_id: file.file_id,
             tenant_id: file.tenant_id,

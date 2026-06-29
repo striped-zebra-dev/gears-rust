@@ -21,6 +21,7 @@ use super::dto::{
     UploadTicketDto, VersionDto,
 };
 use crate::domain::error::DomainError;
+use crate::domain::etag;
 use crate::domain::service::FileService;
 
 type Svc = Extension<Arc<FileService>>;
@@ -126,7 +127,7 @@ pub async fn get_file(
     headers: HeaderMap,
 ) -> ApiResult<impl IntoResponse> {
     let (file, meta) = svc.get_file_with_metadata(&ctx, file_id).await?;
-    let etag = FileService::etag_for(&file);
+    let etag = etag::etag_for(&file);
     let etag_header = etag
         .as_deref()
         .and_then(|tag| HeaderValue::from_str(tag).ok());

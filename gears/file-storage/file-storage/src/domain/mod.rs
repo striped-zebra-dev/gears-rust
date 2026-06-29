@@ -9,7 +9,9 @@
 #![allow(de0301_no_infra_in_domain)]
 
 pub mod authz;
+pub mod data_plane;
 pub mod error;
 pub mod error_convert;
+pub mod etag;
 pub mod local_client;
 pub mod service;

@@ -15,7 +15,9 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use file_storage::domain::authz::TenantOnlyAuthorizer;
+use file_storage::domain::data_plane::DataPlaneService;
 use file_storage::domain::error::DomainError;
+use file_storage::domain::etag;
 use file_storage::domain::service::{FileService, ServiceConfig};
 use file_storage::infra::backend::{BackendRegistry, InMemoryBackend, StorageBackend};
 use file_storage::infra::signed_url::Issuer;
@@ -24,7 +26,7 @@ use file_storage_sdk::{CustomMetadataEntry, CustomMetadataPatch, NewFile, OwnerF
 
 const GTS: &str = "gts.cf.fstorage.file.type.v1~x.test.v1~";
 
-async fn build_service() -> FileService {
+async fn build_service() -> (Arc<FileService>, DataPlaneService) {
     // A unique temp *file* DB: the service opens a connection per call, so every
     // connection must see the same database. A bare `sqlite::memory:` gives each
     // pooled connection its own empty DB; a temp file is shared by construction.
@@ -60,7 +62,9 @@ async fn build_service() -> FileService {
         default_page_size: 50,
         max_page_size: 1000,
     };
-    FileService::new(db, backends, issuer, authorizer, cfg)
+    let svc = Arc::new(FileService::new(db, backends, issuer, authorizer, cfg));
+    let dp = DataPlaneService::new(Arc::clone(&svc));
+    (svc, dp)
 }
 
 fn ctx(tenant: Uuid) -> SecurityContext {
@@ -88,7 +92,7 @@ fn new_file() -> NewFile {
 /// create → upload bytes → bind → the file now has content + an ETag.
 #[tokio::test]
 async fn full_upload_bind_download_lifecycle() {
-    let svc = build_service().await;
+    let (svc, dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
 
     let ticket = svc.create_file(&ctx, new_file()).await.unwrap();
@@ -98,10 +102,10 @@ async fn full_upload_bind_download_lifecycle() {
     // Before bind there is no content.
     let pre = svc.get_file(&ctx, ticket.file_id).await.unwrap();
     assert!(pre.content_id.is_none());
-    assert_eq!(FileService::etag_for(&pre), None);
+    assert_eq!(etag::etag_for(&pre), None);
 
     // Upload bytes (in-process equivalent of the sidecar stream-and-finalize).
-    svc.put_content(
+    dp.put_content(
         &ctx,
         ticket.file_id,
         ticket.version_id,
@@ -117,7 +121,7 @@ async fn full_upload_bind_download_lifecycle() {
         .await
         .unwrap();
     assert_eq!(bound.content_id, Some(ticket.version_id));
-    let etag = FileService::etag_for(&bound).expect("etag after bind");
+    let etag = etag::etag_for(&bound).expect("etag after bind");
     assert!(etag.starts_with('"') && etag.ends_with('"'));
 
     // download-url pins the current content + returns its ETag.
@@ -127,7 +131,7 @@ async fn full_upload_bind_download_lifecycle() {
     assert!(dl.download_url.contains("fs-token="));
 
     // Read the bytes back through the backend.
-    let bytes = svc
+    let bytes = dp
         .read_content(&ctx, ticket.file_id, ticket.version_id, None)
         .await
         .unwrap();
@@ -150,10 +154,10 @@ async fn full_upload_bind_download_lifecycle() {
 
 #[tokio::test]
 async fn bind_with_wrong_if_match_returns_precondition_failed() {
-    let svc = build_service().await;
+    let (svc, dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let t1 = svc.create_file(&ctx, new_file()).await.unwrap();
-    svc.put_content(
+    dp.put_content(
         &ctx,
         t1.file_id,
         t1.version_id,
@@ -168,7 +172,7 @@ async fn bind_with_wrong_if_match_returns_precondition_failed() {
 
     // New version, then bind with a bogus If-Match → 412.
     let t2 = svc.presign_version(&ctx, t1.file_id).await.unwrap();
-    svc.put_content(
+    dp.put_content(
         &ctx,
         t1.file_id,
         t2.version_id,
@@ -188,7 +192,7 @@ async fn bind_with_wrong_if_match_returns_precondition_failed() {
 
     // Binding with the correct current ETag succeeds.
     let current = svc.get_file(&ctx, t1.file_id).await.unwrap();
-    let etag = FileService::etag_for(&current).unwrap();
+    let etag = etag::etag_for(&current).unwrap();
     let bound = svc
         .bind(&ctx, t1.file_id, t2.version_id, Some(&etag))
         .await
@@ -198,7 +202,7 @@ async fn bind_with_wrong_if_match_returns_precondition_failed() {
 
 #[tokio::test]
 async fn tenant_isolation_hides_other_tenants_files() {
-    let svc = build_service().await;
+    let (svc, _dp) = build_service().await;
     let ctx_a = ctx(Uuid::now_v7());
     let ctx_b = ctx(Uuid::now_v7());
 
@@ -215,14 +219,14 @@ async fn tenant_isolation_hides_other_tenants_files() {
 
 #[tokio::test]
 async fn content_type_mismatch_is_rejected() {
-    let svc = build_service().await;
+    let (svc, dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let mut nf = new_file();
     nf.mime_type = "image/png".to_owned();
     let t = svc.create_file(&ctx, nf).await.unwrap();
 
     // Declared png, but the bytes are a PDF signature → mismatch.
-    let err = svc
+    let err = dp
         .put_content(
             &ctx,
             t.file_id,
@@ -240,7 +244,7 @@ async fn content_type_mismatch_is_rejected() {
 
 #[tokio::test]
 async fn update_metadata_merges_and_bumps_meta_version() {
-    let svc = build_service().await;
+    let (svc, _dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let t = svc.create_file(&ctx, new_file()).await.unwrap();
 
@@ -275,10 +279,10 @@ async fn update_metadata_merges_and_bumps_meta_version() {
 
 #[tokio::test]
 async fn restore_prior_version_rebinds_pointer() {
-    let svc = build_service().await;
+    let (svc, dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let t1 = svc.create_file(&ctx, new_file()).await.unwrap();
-    svc.put_content(
+    dp.put_content(
         &ctx,
         t1.file_id,
         t1.version_id,
@@ -292,7 +296,7 @@ async fn restore_prior_version_rebinds_pointer() {
         .unwrap();
 
     let t2 = svc.presign_version(&ctx, t1.file_id).await.unwrap();
-    svc.put_content(
+    dp.put_content(
         &ctx,
         t1.file_id,
         t2.version_id,
@@ -306,7 +310,7 @@ async fn restore_prior_version_rebinds_pointer() {
         &ctx,
         t1.file_id,
         t2.version_id,
-        FileService::etag_for(&cur).as_deref(),
+        etag::etag_for(&cur).as_deref(),
     )
     .await
     .unwrap();
@@ -321,7 +325,7 @@ async fn restore_prior_version_rebinds_pointer() {
 
 #[tokio::test]
 async fn delete_file_then_get_returns_not_found() {
-    let svc = build_service().await;
+    let (svc, _dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let t = svc.create_file(&ctx, new_file()).await.unwrap();
     svc.delete_file(&ctx, t.file_id).await.unwrap();
@@ -334,7 +338,7 @@ async fn delete_file_then_get_returns_not_found() {
 
 #[tokio::test]
 async fn list_files_filters_by_owner() {
-    let svc = build_service().await;
+    let (svc, _dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let owner = Uuid::now_v7();
     let mut nf = new_file();

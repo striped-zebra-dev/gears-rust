@@ -3,30 +3,29 @@
 //! Owns the P1 flows: create + presign upload, finalize + bind (optimistic CAS),
 //! download-URL issuance, metadata CRUD, listing, versioning, and delete. It
 //! depends on the repositories (tenant-scoped persistence), the backend registry
-//! (byte storage), the signed-URL issuer, the content pipeline, and an
-//! [`Authorizer`]. Content never flows through this service except via the
-//! data-plane helpers used by the sidecar/tests.
+//! (byte storage), the signed-URL issuer, and an [`Authorizer`]. Content bytes
+//! never flow through this service — they move via [`crate::domain::data_plane::DataPlaneService`].
 
 // Domain terms (ETag, If-Match, FileStorage, GET/PUT) recur throughout the docs.
 #![allow(clippy::doc_markdown)]
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use time::OffsetDateTime;
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::{AccessScope, SecurityContext};
 use uuid::Uuid;
 
 use file_storage_sdk::{
-    ByteRange, CustomMetadataEntry, CustomMetadataPatch, File, FileVersion, NewFile, OwnerFilter,
+    CustomMetadataEntry, CustomMetadataPatch, File, FileVersion, NewFile, OwnerFilter,
     VersionStatus,
 };
 
 use crate::domain::authz::{Authorizer, actions};
 use crate::domain::error::DomainError;
+use crate::domain::etag;
 use crate::infra::backend::{BackendCapabilities, BackendRegistry};
-use crate::infra::content::{hash, mime};
+use crate::infra::content::hash;
 use crate::infra::signed_url::{Claims, Issuer, Op, UploadConstraints};
 use crate::infra::storage::repo::{FileRepo, MetadataRepo, VersionRepo};
 
@@ -99,14 +98,6 @@ impl FileService {
 
     fn tenant_scope(ctx: &SecurityContext) -> AccessScope {
         AccessScope::for_tenant(ctx.subject_tenant_id())
-    }
-
-    /// Content ETag derived from `(file_id, content_id)` — opaque, never equal to
-    /// the content hash (DESIGN §3.1, §4.2).
-    fn content_etag(file_id: Uuid, content_id: Uuid) -> String {
-        let digest =
-            hash::sha256_parts(&[b"fs-etag-v1", file_id.as_bytes(), content_id.as_bytes()]);
-        format!("\"{}\"", hex::encode(&digest[..16]))
     }
 
     fn backend_path(file_id: Uuid, version_id: Uuid) -> String {
@@ -387,7 +378,7 @@ impl FileService {
 
         // Validate the If-Match precondition against the current content ETag.
         let expected_content_id = file.content_id;
-        let current_etag = expected_content_id.map(|c| Self::content_etag(file_id, c));
+        let current_etag = expected_content_id.map(|c| etag::content_etag(file_id, c));
         match if_match {
             // The first bind (no content yet) may omit If-Match; rebinding
             // already-bound content MUST carry it, otherwise the advertised
@@ -507,13 +498,6 @@ impl FileService {
         self.files
             .list(&conn, &Self::tenant_scope(ctx), owner, limit, offset)
             .await
-    }
-
-    /// The content ETag for a file (or `None` if no content is bound yet).
-    #[must_use]
-    pub fn etag_for(file: &File) -> Option<String> {
-        file.content_id
-            .map(|cid| Self::content_etag(file.file_id, cid))
     }
 
     // ── metadata update ────────────────────────────────────────────────────────
@@ -654,7 +638,7 @@ impl FileService {
         )?;
         Ok(DownloadTicket {
             download_url,
-            etag: Self::content_etag(file_id, target),
+            etag: etag::content_etag(file_id, target),
             version_id: target,
         })
     }
@@ -685,7 +669,7 @@ impl FileService {
         version_id: Uuid,
     ) -> Result<File, DomainError> {
         let file = self.get_file(ctx, file_id).await?;
-        let if_match = Self::etag_for(&file);
+        let if_match = etag::etag_for(&file);
         self.bind(ctx, file_id, version_id, if_match.as_deref())
             .await
     }
@@ -755,60 +739,16 @@ impl FileService {
         }
     }
 
-    // ── data-plane helpers (used by the sidecar and by tests) ──────────────────
+    // ── pub(crate) accessors for DataPlaneService ─────────────────────────────
 
-    /// Validate, store, hash, and finalize an uploaded blob in one step. This is
-    /// the in-process equivalent of the sidecar's stream-and-bind; the sidecar
-    /// performs the same steps while streaming.
-    pub async fn put_content(
-        &self,
-        ctx: &SecurityContext,
-        file_id: Uuid,
-        version_id: Uuid,
-        declared_mime: &str,
-        bytes: Bytes,
-    ) -> Result<(), DomainError> {
-        // Content-type validation against the actual bytes.
-        mime::validate(declared_mime, &bytes)?;
-
-        let _ = ctx;
-        let conn = self.db.conn().map_err(DomainError::from)?;
-        let version = self
-            .versions
-            .get(&conn, &AccessScope::allow_all(), file_id, version_id)
-            .await?
-            .ok_or_else(|| DomainError::version_not_found(file_id, version_id))?;
-
-        let backend = self.backends.get(&version.backend_id)?;
-        backend.put(&version.backend_path, bytes.clone()).await?;
-
-        let size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
-        let digest = hash::sha256(&bytes);
-        self.finalize_upload(ctx, file_id, version_id, size, digest)
-            .await
+    /// Backend registry (shared with the data plane).
+    pub(crate) fn backends(&self) -> &BackendRegistry {
+        &self.backends
     }
 
-    /// Read a (range of a) version's content from its backend.
-    pub async fn read_content(
-        &self,
-        ctx: &SecurityContext,
-        file_id: Uuid,
-        version_id: Uuid,
-        range: Option<ByteRange>,
-    ) -> Result<Bytes, DomainError> {
-        let _ = ctx;
-        let conn = self.db.conn().map_err(DomainError::from)?;
-        let version = self
-            .versions
-            .get(&conn, &AccessScope::allow_all(), file_id, version_id)
-            .await?
-            .ok_or_else(|| DomainError::version_not_found(file_id, version_id))?;
-
-        let backend = self.backends.get(&version.backend_id)?;
-        match range {
-            Some(r) => backend.get_range(&version.backend_path, r).await,
-            None => backend.get(&version.backend_path).await,
-        }
+    /// Database provider (shared with the data plane).
+    pub(crate) fn db(&self) -> &Arc<DBProvider<DbError>> {
+        &self.db
     }
 }
 
