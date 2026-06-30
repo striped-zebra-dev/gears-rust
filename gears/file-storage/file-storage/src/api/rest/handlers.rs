@@ -221,8 +221,10 @@ pub async fn delete_file(
     Extension(ctx): Ctx,
     Extension(svc): Svc,
     Path(file_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> ApiResult<impl IntoResponse> {
-    svc.delete_file(&ctx, file_id).await?;
+    let if_match = header_str(&headers, "if-match");
+    svc.delete_file(&ctx, file_id, if_match.as_deref()).await?;
     Ok(no_content().into_response())
 }
 

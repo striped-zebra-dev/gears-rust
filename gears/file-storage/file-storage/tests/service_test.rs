@@ -330,11 +330,85 @@ async fn delete_file_then_get_returns_not_found() {
     let (svc, _dp) = build_service().await;
     let ctx = ctx(Uuid::now_v7());
     let t = svc.create_file(&ctx, new_file()).await.unwrap();
-    svc.delete_file(&ctx, t.file_id).await.unwrap();
+    // No bound content yet: use "*" (wildcard If-Match).
+    svc.delete_file(&ctx, t.file_id, Some("*")).await.unwrap();
     let err = svc.get_file(&ctx, t.file_id).await.unwrap_err();
     assert!(
         matches!(err, DomainError::FileNotFound { .. }),
         "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn download_url_pending_version_is_rejected() {
+    let (svc, _dp) = build_service().await;
+    let ctx = ctx(Uuid::now_v7());
+
+    // Create a file — the first version is pending (upload not yet finalized).
+    let ticket = svc.create_file(&ctx, new_file()).await.unwrap();
+
+    // Requesting a signed URL for a pending version must fail with Conflict.
+    let err = svc
+        .download_url(&ctx, ticket.file_id, Some(ticket.version_id))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DomainError::Conflict { .. }),
+        "expected Conflict for pending version, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_file_if_match_required_and_enforced() {
+    let (svc, dp) = build_service().await;
+    let ctx = ctx(Uuid::now_v7());
+
+    // Create, upload, and bind a file so it has a real content ETag.
+    let ticket = svc.create_file(&ctx, new_file()).await.unwrap();
+    dp.put_content(
+        &ctx,
+        ticket.file_id,
+        ticket.version_id,
+        "text/plain",
+        Bytes::from_static(b"hello"),
+    )
+    .await
+    .unwrap();
+    svc.bind(&ctx, ticket.file_id, ticket.version_id, None)
+        .await
+        .unwrap();
+
+    let file = svc.get_file(&ctx, ticket.file_id).await.unwrap();
+    let current_etag = etag::etag_for(&file).expect("file must have an ETag after bind");
+
+    // No If-Match → 412 (required).
+    let err = svc
+        .delete_file(&ctx, ticket.file_id, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DomainError::PreconditionFailed { .. }),
+        "expected PreconditionFailed when If-Match absent, got {err:?}"
+    );
+
+    // Wrong ETag → 412.
+    let err = svc
+        .delete_file(&ctx, ticket.file_id, Some("\"wrong-etag\""))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DomainError::PreconditionFailed { .. }),
+        "expected PreconditionFailed for wrong ETag, got {err:?}"
+    );
+
+    // Correct ETag → success.
+    svc.delete_file(&ctx, ticket.file_id, Some(&current_etag))
+        .await
+        .unwrap();
+    let err = svc.get_file(&ctx, ticket.file_id).await.unwrap_err();
+    assert!(
+        matches!(err, DomainError::FileNotFound { .. }),
+        "file must be gone after successful delete, got {err:?}"
     );
 }
 

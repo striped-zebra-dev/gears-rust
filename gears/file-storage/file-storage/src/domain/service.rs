@@ -448,19 +448,51 @@ impl FileService {
 
     // ── delete ──────────────────────────────────────────────────────────────────
 
-    /// `DELETE /files/{id}`: remove the file and all versions (FK cascade), then
-    /// best-effort delete the backend blobs.
+    /// `DELETE /files/{id}`: remove the file and all versions (FK cascade) under
+    /// an `If-Match` content-ETag precondition, then best-effort delete the
+    /// backend blobs. `If-Match` is **required** (see api.md §DELETE); pass `"*"`
+    /// to delete unconditionally when the ETag is unknown.
     pub async fn delete_file(
         &self,
         ctx: &SecurityContext,
         file_id: Uuid,
+        if_match: Option<&str>,
     ) -> Result<(), DomainError> {
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
-        let scope = self
+        let _scope = self
             .authorizer
             .authorize(ctx, actions::DELETE, &file.gts_file_type, Some(file_id))
             .await?;
+
+        // Validate the If-Match precondition against the current content ETag.
+        let current_etag = etag::etag_for(&file);
+        match if_match {
+            None => {
+                return Err(DomainError::precondition_failed(
+                    "If-Match is required to delete a file",
+                ));
+            }
+            Some(m) => {
+                let m = m.trim();
+                if m != "*" && Some(m) != current_etag.as_deref() {
+                    return Err(DomainError::precondition_failed(
+                        "If-Match does not match the current content ETag",
+                    ));
+                }
+            }
+        }
+
+        self.delete_file_inner(file_id).await
+    }
+
+    /// Inner (unconditional) file deletion: authorization and If-Match must have
+    /// already been checked by the caller. Collects versions, removes the DB row
+    /// (and FK children via cascade), then best-effort-deletes all backend blobs.
+    async fn delete_file_inner(&self, file_id: Uuid) -> Result<(), DomainError> {
+        // Authorization has already been verified by callers; use allow_all() for
+        // the DB scope — the tenant boundary was enforced by require_file() above.
+        let scope = AccessScope::allow_all();
 
         // Collect backend blobs before the metadata row (and FK children) vanish.
         let versions = self.store.list_versions(file_id).await?;
@@ -504,6 +536,12 @@ impl FileService {
             .get_version(file_id, target)
             .await?
             .ok_or_else(|| DomainError::version_not_found(file_id, target))?;
+
+        if version.status != file_storage_sdk::VersionStatus::Available {
+            return Err(DomainError::conflict(
+                "cannot issue a download URL for a version whose upload has not been finalized",
+            ));
+        }
 
         let download_url = self.sign_url(
             Op::Get,
@@ -567,8 +605,10 @@ impl FileService {
 
         let all = self.store.list_versions(file_id).await?;
         if all.len() <= 1 {
-            // Last version → delete the whole file.
-            return self.delete_file(ctx, file_id).await;
+            // Last version → delete the whole file. Authorization has already been
+            // checked above; skip the If-Match gate (delete_version has its own
+            // contract — no If-Match on DELETE /files/{id}/versions/{vid}).
+            return self.delete_file_inner(file_id).await;
         }
         let Some(version) = all.into_iter().find(|v| v.version_id == version_id) else {
             return Err(DomainError::version_not_found(file_id, version_id));

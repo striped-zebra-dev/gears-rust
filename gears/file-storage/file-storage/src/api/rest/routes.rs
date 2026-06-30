@@ -177,12 +177,15 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // DELETE /files/{id} — delete file + all versions
+    // DELETE /files/{id} — delete file + all versions (If-Match required)
     router = OperationBuilder::delete(format!("{BASE}/files/{{id}}"))
         .operation_id("file_storage.delete_file")
         .authenticated()
         .require_license_features::<License>([])
         .summary("Delete a file and all its versions")
+        .description(
+            "If-Match (content ETag or \"*\") is required; 412 on mismatch or when absent.",
+        )
         .tag(API_TAG)
         .path_param("id", "File UUID")
         .handler(handlers::delete_file)
@@ -190,6 +193,12 @@ pub(crate) fn register_routes(
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
+        // 412: If-Match absent or does not match the current content ETag.
+        .problem_response(
+            openapi,
+            StatusCode::PRECONDITION_FAILED,
+            "Precondition Failed",
+        )
         .error_500(openapi)
         .register(router, openapi);
 
