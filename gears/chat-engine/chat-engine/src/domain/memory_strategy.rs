@@ -19,11 +19,5 @@ pub fn default_memory_strategy() -> MemoryStrategy {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_is_full() {
-        assert!(matches!(default_memory_strategy(), MemoryStrategy::Full));
-    }
-}
+#[path = "memory_strategy_tests.rs"]
+mod memory_strategy_tests;

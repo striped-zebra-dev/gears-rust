@@ -11,6 +11,9 @@ readme = "README.md"
 keywords = ["cyberfabric", "cyberfabric-modules"]
 categories = ["artificial-intelligence"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lib]
 name = "chat_engine"
 

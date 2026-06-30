@@ -16,10 +16,8 @@
 // @cpt-cf-chat-engine-api-dto:p14
 // @cpt-cf-chat-engine-adr-http-client-protocol:p14
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use toolkit_macros::api_dto;
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use chat_engine_sdk::models::{
@@ -545,7 +543,8 @@ pub struct SummarizeAcceptedDto {
 // ---------------------------------------------------------------------------
 
 /// `event: "start"` — begin streaming.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[api_dto(request, response)]
+#[derive(Debug, Clone)]
 pub struct StreamingStartDto {
     pub message_id: Uuid,
 }
@@ -553,7 +552,8 @@ pub struct StreamingStartDto {
 /// `event: "chunk"` — append `chunk` (text fragment) to the assistant
 /// message body. `chunk` is intentionally `String`, NOT a structured
 /// payload.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[api_dto(request, response)]
+#[derive(Debug, Clone)]
 pub struct StreamingChunkDto {
     pub message_id: Uuid,
     pub chunk: String,
@@ -562,7 +562,8 @@ pub struct StreamingChunkDto {
 /// `event: "complete"` — streaming finished successfully. `metadata` is a
 /// plugin-defined object; it is OMITTED from the wire payload when
 /// absent.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[api_dto(request, response)]
+#[derive(Debug, Clone)]
 pub struct StreamingCompleteDto {
     pub message_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -573,7 +574,8 @@ pub struct StreamingCompleteDto {
 /// human-readable string. Discriminator prefixes (`context_overflow:`,
 /// `stream_interrupted:`, `deadline_exceeded:`) are surfaced verbatim per
 /// ADR-0023. No further events follow.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[api_dto(request, response)]
+#[derive(Debug, Clone)]
 pub struct StreamingErrorDto {
     pub message_id: Uuid,
     pub error: String,
@@ -583,8 +585,8 @@ pub struct StreamingErrorDto {
 /// `StreamingEventDto` per line. The discriminator field is `type` per
 /// the OpenAPI spec (`api/http-protocol.json`) — see
 /// `StreamingStartEvent.type`, `StreamingChunkEvent.type`, …
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[api_dto(request, response)]
+#[serde(tag = "type")]
 pub enum StreamingEventDto {
     Start(StreamingStartDto),
     Chunk(StreamingChunkDto),
@@ -592,13 +594,8 @@ pub enum StreamingEventDto {
     Error(StreamingErrorDto),
 }
 
-// Mark the streaming DTOs as `ResponseApiDto` so they can appear in
-// `OperationBuilder::json_response_with_schema`.
-impl toolkit::api::api_dto::ResponseApiDto for StreamingStartDto {}
-impl toolkit::api::api_dto::ResponseApiDto for StreamingChunkDto {}
-impl toolkit::api::api_dto::ResponseApiDto for StreamingCompleteDto {}
-impl toolkit::api::api_dto::ResponseApiDto for StreamingErrorDto {}
-impl toolkit::api::api_dto::ResponseApiDto for StreamingEventDto {}
+// The streaming DTOs derive `ResponseApiDto` via `#[api_dto(response)]`, so
+// they can appear in `OperationBuilder::json_response_with_schema` directly.
 
 // ---------------------------------------------------------------------------
 // Domain → DTO conversions for the streaming events
@@ -679,122 +676,5 @@ mod rfc3339_opt {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn text_part_input_string_is_canonicalized_to_object() {
-        // A bare-string text part is wrapped so it matches the persisted /
-        // streamed assistant shape `{ "text": ... }`.
-        let dto = MessagePartInputDto {
-            part_type: "text".into(),
-            content: json!("hello"),
-        };
-        let sdk = SdkMessagePartInput::from(dto);
-        assert_eq!(sdk.part_type, MessagePartType::Text);
-        assert_eq!(sdk.content, json!({ "text": "hello" }));
-    }
-
-    #[test]
-    fn text_part_input_object_passes_through() {
-        let dto = MessagePartInputDto {
-            part_type: "text".into(),
-            content: json!({ "text": "hi" }),
-        };
-        assert_eq!(
-            SdkMessagePartInput::from(dto).content,
-            json!({ "text": "hi" })
-        );
-    }
-
-    #[test]
-    fn non_text_part_content_is_untouched() {
-        let dto = MessagePartInputDto {
-            part_type: "links".into(),
-            content: json!({ "links": [{ "url": "https://e.com" }] }),
-        };
-        let sdk = SdkMessagePartInput::from(dto);
-        assert_eq!(sdk.part_type, MessagePartType::Links);
-        assert_eq!(
-            sdk.content,
-            json!({ "links": [{ "url": "https://e.com" }] })
-        );
-    }
-
-    #[test]
-    fn streaming_event_dto_serializes_as_tagged_union() {
-        let evt = StreamingEventDto::Start(StreamingStartDto {
-            message_id: Uuid::nil(),
-        });
-        let s = serde_json::to_string(&evt).unwrap();
-        assert!(s.contains("\"type\":\"start\""));
-    }
-
-    #[test]
-    fn streaming_chunk_dto_uses_flat_string_chunk() {
-        let evt = StreamingEventDto::Chunk(StreamingChunkDto {
-            message_id: Uuid::nil(),
-            chunk: "hi".into(),
-        });
-        let s = serde_json::to_string(&evt).unwrap();
-        assert!(s.contains("\"type\":\"chunk\""));
-        assert!(s.contains("\"chunk\":\"hi\""));
-    }
-
-    #[test]
-    fn streaming_error_dto_uses_single_string_error_field() {
-        let evt = StreamingEventDto::Error(StreamingErrorDto {
-            message_id: Uuid::nil(),
-            error: "context_overflow: too many tokens".into(),
-        });
-        let s = serde_json::to_string(&evt).unwrap();
-        assert!(s.contains("\"type\":\"error\""));
-        assert!(s.contains("\"error\":\"context_overflow: too many tokens\""));
-    }
-
-    #[test]
-    fn streaming_complete_dto_omits_metadata_when_none() {
-        let evt = StreamingEventDto::Complete(StreamingCompleteDto {
-            message_id: Uuid::nil(),
-            metadata: None,
-        });
-        let value: serde_json::Value = serde_json::to_value(&evt).unwrap();
-        assert!(
-            value.get("metadata").is_none(),
-            "metadata must be omitted when None"
-        );
-    }
-
-    #[test]
-    fn streaming_complete_dto_keeps_metadata_when_present() {
-        let evt = StreamingEventDto::Complete(StreamingCompleteDto {
-            message_id: Uuid::nil(),
-            metadata: Some(json!({"model": "gpt-x"})),
-        });
-        let s = serde_json::to_string(&evt).unwrap();
-        assert!(s.contains("\"metadata\""));
-        assert!(s.contains("\"model\":\"gpt-x\""));
-    }
-
-    #[test]
-    fn session_dto_redacts_share_token() {
-        let dto_json = serde_json::to_string(&SessionDto {
-            session_id: Uuid::nil(),
-            tenant_id: "t".into(),
-            user_id: "u".into(),
-            client_id: None,
-            session_type_id: None,
-            enabled_capabilities: None,
-            metadata: None,
-            lifecycle_state: "active".into(),
-            created_at: time::OffsetDateTime::UNIX_EPOCH,
-            updated_at: time::OffsetDateTime::UNIX_EPOCH,
-        })
-        .unwrap();
-        assert!(
-            !dto_json.contains("share_token"),
-            "share_token must never leak via SessionDto"
-        );
-    }
-}
+#[path = "dto_tests.rs"]
+mod dto_tests;
