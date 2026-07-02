@@ -142,6 +142,14 @@ impl FileService {
         }
     }
 
+    /// Return the token verifier backed by the control plane's signing key.
+    /// The data-plane finalize handler uses this to validate the sidecar's
+    /// upload token without knowing the private key.
+    #[must_use]
+    pub fn verifier(&self) -> crate::infra::signed_url::Verifier {
+        self.issuer.verifier()
+    }
+
     pub(super) fn sign_url(
         &self,
         op: Op,

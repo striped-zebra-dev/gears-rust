@@ -9,6 +9,7 @@ use axum::extract::{Path, Query};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use serde::Deserialize;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use toolkit::api::canonical_prelude::*;
@@ -29,6 +30,7 @@ use crate::domain::multipart_service::MultipartService;
 use crate::domain::policy::{PolicyScope, RetentionScope};
 use crate::domain::policy_service::PolicyService;
 use crate::domain::service::FileService;
+use crate::infra::signed_url::{Op, Verifier};
 
 type Svc = Extension<Arc<FileService>>;
 type MultiSvc = Extension<Arc<MultipartService>>;
@@ -492,4 +494,74 @@ pub async fn transfer_ownership(
         .transfer_ownership(&ctx, file_id, new_owner_kind, req.new_owner_id)
         .await?;
     Ok(Json(FileDto::from_parts(file, meta)))
+}
+
+// ── data-plane finalize (s2s, token-authenticated) ────────────────────────────
+
+/// Query params for the token-authenticated data-plane finalize endpoint.
+#[derive(Debug, Deserialize)]
+pub struct FinalizeTokenQuery {
+    #[serde(rename = "fs-token")]
+    pub fs_token: Option<String>,
+}
+
+/// Request body for the data-plane finalize endpoint.
+///
+/// The sidecar posts the measured size and SHA-256 hash after a successful PUT.
+#[derive(Debug, serde::Deserialize)]
+pub struct FinalizeUploadReq {
+    /// Byte length of the uploaded content.
+    pub size: i64,
+    /// SHA-256 hash of the uploaded content, hex-encoded.
+    pub hash_hex: String,
+}
+
+/// `POST /files/{file_id}/versions/{version_id}/finalize`
+///
+/// Token-authenticated: the request must carry the same signed upload token the
+/// sidecar received from the control plane. No user JWT is required — the token
+/// proves the upload was pre-authorized by the control plane.
+///
+/// Called by the sidecar immediately after a successful `PUT` to report the
+/// measured size + hash and transition the version from `pending` to `available`.
+///
+/// @cpt-cf-file-storage-fr-audit-trail
+pub async fn finalize_version(
+    Extension(svc): Svc,
+    Extension(verifier): Extension<Arc<Verifier>>,
+    Path((file_id, version_id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<FinalizeTokenQuery>,
+    headers: HeaderMap,
+    Json(req): Json<FinalizeUploadReq>,
+) -> ApiResult<impl IntoResponse> {
+    // Extract the token from query param or header (same convention as the sidecar).
+    let token = q
+        .fs_token
+        .or_else(|| {
+            headers
+                .get("x-fs-token")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| DomainError::token_invalid("missing fs-token"))?;
+
+    let claims = verifier
+        .verify(&token, OffsetDateTime::now_utc())
+        .map_err(|e| DomainError::token_invalid(e.to_string()))?;
+
+    // The token must authorize a PUT to exactly this (file_id, version_id).
+    if claims.op != Op::Put || claims.file_id != file_id || claims.version_id != version_id {
+        return Err(DomainError::token_invalid(
+            "token does not authorize finalization of this version",
+        )
+        .into());
+    }
+
+    let hash_value = hex::decode(&req.hash_hex)
+        .map_err(|_| DomainError::validation("hash_hex", "must be valid hex-encoded SHA-256"))?;
+
+    svc.finalize_upload_by_token(&claims, req.size, hash_value)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

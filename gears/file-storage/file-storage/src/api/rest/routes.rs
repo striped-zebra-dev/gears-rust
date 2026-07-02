@@ -14,6 +14,7 @@ use super::handlers;
 use crate::domain::multipart_service::MultipartService;
 use crate::domain::policy_service::PolicyService;
 use crate::domain::service::FileService;
+use crate::infra::signed_url::Verifier;
 
 const API_TAG: &str = "File Storage";
 const BASE: &str = "/api/file-storage/v1";
@@ -37,6 +38,34 @@ pub(crate) fn register_routes(
     multipart_service: Arc<MultipartService>,
     policy_service: Arc<PolicyService>,
 ) -> Router {
+    // ── Data-plane finalize (s2s, token-authenticated) ──────────────────────
+    // This endpoint is NOT authenticated via the end-user JWT middleware; the
+    // signed upload token is the sole authorization.
+    //
+    // Registered as `.public()` so the api-gateway's route-policy does NOT
+    // require a user JWT for this path (the fs-token carries the authorization).
+    // The Verifier extension is added to the whole router at the bottom.
+    let verifier: Arc<Verifier> = Arc::new(service.verifier());
+    router = OperationBuilder::post(format!(
+        "{BASE}/files/{{file_id}}/versions/{{version_id}}/finalize"
+    ))
+    .operation_id("file_storage.finalize_version")
+    .public()
+    .summary("Finalize a pending version (token-authenticated, sidecar s2s callback)")
+    .description(
+        "Called by the sidecar after a successful PUT to mark the version `available`. \
+         Authorized by the signed upload token (fs-token) \u{2014} no user JWT required.",
+    )
+    .tag(API_TAG)
+    .path_param("file_id", "File UUID")
+    .path_param("version_id", "Version UUID")
+    .handler(handlers::finalize_version)
+    .json_response(StatusCode::NO_CONTENT, "Version finalized")
+    .error_403(openapi)
+    .error_404(openapi)
+    .error_500(openapi)
+    .register(router, openapi);
+
     // POST /files — create + presign upload
     router = OperationBuilder::post(format!("{BASE}/files"))
         .operation_id("file_storage.create_file")
@@ -498,6 +527,7 @@ pub(crate) fn register_routes(
         .register(router, openapi);
 
     router
+        .layer(axum::Extension(verifier))
         .layer(axum::Extension(policy_service))
         .layer(axum::Extension(multipart_service))
         .layer(axum::Extension(service))

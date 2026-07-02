@@ -10,12 +10,20 @@
 //!   - `FS_SIDECAR_ADDR`         — bind address (default `0.0.0.0:8087`)
 //!   - `FS_SIDECAR_PUBLIC_KEY`   — base64url Ed25519 public key (from control)
 //!   - `FS_SIDECAR_BACKEND_ROOT` — local-fs backend root (default `./.file-storage-data`)
+//!   - `FS_SIDECAR_CONTROL_URL`  — base URL of the control plane (for finalize callback,
+//!     default `http://localhost:8080`). When set to an empty string the callback is
+//!     disabled (dev/test mode only).
 //!
-//! After a successful upload the sidecar pre-registers + binds the version
-//! against the control plane on the user's behalf (FS SDK, on-behalf-of). That
-//! control callback is performed by `file_storage::domain::service::FileService`
-//! ({`finalize_upload`, `bind`}); wiring the s2s client to invoke it is the
-//! remaining deployment step and is intentionally left out of this thin binary.
+//! ## Upload lifecycle
+//!
+//! After a successful single-part `PUT`, the sidecar:
+//! 1. Writes the blob to the backend.
+//! 2. Posts a finalize callback to the control plane:
+//!    `POST {control_url}/api/file-storage/v1/files/{file_id}/versions/{version_id}/finalize`
+//!    carrying the signed upload token + the measured size+hash.
+//! 3. Returns `200 OK` to the client only when the callback succeeds.
+//!    A failed callback returns `502 Bad Gateway` — the client should retry
+//!    the upload (idempotent: the backend PUT is overwrite-safe).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,6 +49,10 @@ use file_storage::infra::signed_url::{Op, Verifier};
 struct SidecarState {
     verifier: Arc<Verifier>,
     backend: Arc<dyn StorageBackend>,
+    /// Base URL of the control plane, e.g. `http://localhost:8080`.
+    /// Empty string = finalize callback disabled (dev/no-control-plane mode).
+    control_base_url: String,
+    http: reqwest::Client,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,12 +74,27 @@ async fn main() -> anyhow::Result<()> {
         .decode(public_key_b64.trim())
         .map_err(|e| anyhow::anyhow!("invalid FS_SIDECAR_PUBLIC_KEY: {e}"))?;
 
+    // `FS_SIDECAR_CONTROL_URL` — base URL of the control-plane finalize endpoint.
+    // An empty string disables the callback (useful for local dev or standalone tests).
+    let control_base_url = std::env::var("FS_SIDECAR_CONTROL_URL")
+        .unwrap_or_else(|_| "http://localhost:8080".to_owned());
+    if control_base_url.is_empty() {
+        tracing::warn!(
+            "FS_SIDECAR_CONTROL_URL is empty \u{2014} finalize callback disabled. \
+             Uploaded versions will remain in 'pending' status."
+        );
+    } else {
+        tracing::info!(control_base_url = %control_base_url, "sidecar finalize callback enabled");
+    }
+
     let state = SidecarState {
         verifier: Arc::new(
             Verifier::from_public_key(public_key)
                 .map_err(|e| anyhow::anyhow!("invalid FS_SIDECAR_PUBLIC_KEY: {e}"))?,
         ),
         backend: Arc::new(LocalFsBackend::new("local-fs", root)),
+        control_base_url,
+        http: reqwest::Client::new(),
     };
 
     let app = Router::new()
@@ -142,15 +169,115 @@ async fn upload(
         }
     }
 
+    let size = i64::try_from(body.len()).unwrap_or(i64::MAX);
+    let hash_hex = hex::encode(hash::sha256(&body));
+
     match state.backend.put(&claims.backend_path, body).await {
-        Ok(()) => {
-            // NOTE: the control-plane pre-register + bind on-behalf-of happens here
-            // via the FS SDK in a full deployment (see module docs).
-            (StatusCode::OK, "uploaded").into_response()
-        }
+        Ok(()) => {}
         Err(e) => {
             tracing::error!(error = %e, "backend put failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "backend error").into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, "backend error").into_response();
+        }
+    }
+
+    // Finalize callback: notify the control plane that bytes have landed so it
+    // can mark the version `available`. The same signed token proves this was
+    // a pre-authorized upload (DESIGN §bind-service).
+    if let Err(resp) =
+        finalize_with_control_plane(&state, &token, file_id, version_id, size, &hash_hex).await
+    {
+        return resp;
+    }
+
+    (StatusCode::OK, "uploaded").into_response()
+}
+
+/// Build the finalize request body bytes (JSON `{size, hash_hex}`).
+///
+/// Returns an internal-error `Response` (boxed) if JSON serialization fails,
+/// which is only possible if `serde_json` itself has a bug (our value is trivial).
+#[allow(clippy::result_large_err)]
+fn finalize_body(size: i64, hash_hex: &str) -> Result<Vec<u8>, Response> {
+    let body = serde_json::json!({ "size": size, "hash_hex": hash_hex });
+    serde_json::to_vec(&body).map_err(|e| {
+        tracing::error!(error = %e, "failed to serialize finalize request body");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+    })
+}
+
+/// Interpret the HTTP response from the control-plane finalize call.
+async fn interpret_finalize_response(
+    resp: reqwest::Response,
+    file_id: Uuid,
+    version_id: Uuid,
+) -> Result<(), Response> {
+    if resp.status().is_success() {
+        tracing::debug!(%file_id, %version_id, "finalize callback succeeded");
+        return Ok(());
+    }
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    tracing::error!(
+        %file_id, %version_id,
+        http_status = %status,
+        body = %body_text,
+        "control-plane finalize callback returned error"
+    );
+    Err((
+        StatusCode::BAD_GATEWAY,
+        format!("control-plane finalize failed ({status}): {body_text}"),
+    )
+        .into_response())
+}
+
+/// Call the control-plane finalize endpoint after a successful PUT.
+///
+/// Returns `Ok(())` when the control plane accepted the finalize, or
+/// `Err(Response)` with a `502 Bad Gateway` response when the callback
+/// fails (so the upload handler can surface the failure to the client).
+///
+/// When `control_base_url` is empty, the callback is skipped (dev mode).
+async fn finalize_with_control_plane(
+    state: &SidecarState,
+    token: &str,
+    file_id: Uuid,
+    version_id: Uuid,
+    size: i64,
+    hash_hex: &str,
+) -> Result<(), Response> {
+    if state.control_base_url.is_empty() {
+        return Ok(());
+    }
+
+    let url = format!(
+        "{}/api/file-storage/v1/files/{}/versions/{}/finalize?fs-token={}",
+        state.control_base_url.trim_end_matches('/'),
+        file_id,
+        version_id,
+        token,
+    );
+
+    let body_bytes = finalize_body(size, hash_hex)?;
+
+    match state
+        .http
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(body_bytes)
+        .send()
+        .await
+    {
+        Ok(resp) => interpret_finalize_response(resp, file_id, version_id).await,
+        Err(e) => {
+            tracing::error!(
+                %file_id, %version_id, error = %e,
+                "control-plane finalize callback failed"
+            );
+            Err((
+                StatusCode::BAD_GATEWAY,
+                format!("control-plane finalize callback unreachable: {e}"),
+            )
+                .into_response())
         }
     }
 }

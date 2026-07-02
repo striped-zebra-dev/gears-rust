@@ -3,19 +3,19 @@
 use std::collections::HashMap;
 
 use time::OffsetDateTime;
-use toolkit_security::SecurityContext;
+use toolkit_security::{AccessScope, SecurityContext};
 use uuid::Uuid;
 
 use file_storage_sdk::{CustomMetadataPatch, File};
 
-use crate::domain::audit::AuditOperation;
+use crate::domain::audit::{AuditEntry, AuditOperation};
 use crate::domain::authz::actions;
 use crate::domain::error::DomainError;
 use crate::domain::etag;
 use crate::domain::policy::PolicyResolver;
 use crate::domain::service::{FileService, VersionRef};
 use crate::infra::external_clients::UsageDelta;
-use crate::infra::signed_url::{Op, UploadConstraints};
+use crate::infra::signed_url::{Claims, Op, UploadConstraints};
 
 impl FileService {
     /// Authorize a write to `file_id` (WRITE action) without mutating anything.
@@ -397,6 +397,95 @@ impl FileService {
         });
 
         self.store.require_file(&scope, file_id).await
+    }
+
+    /// Record an uploaded version's size+hash and mark it available, authorized
+    /// by the sidecar's signed upload token rather than a user `SecurityContext`.
+    ///
+    /// This is the token-authenticated variant of [`finalize_upload`]. The
+    /// control plane minted the token at presign time, so verifying it here
+    /// constitutes full authorization — no separate user re-auth is needed
+    /// (DESIGN §bind-service "Trusts a sidecar-reported size/hash (the upload
+    /// URL was control-signed)").
+    ///
+    /// The `claims` have already been verified by the caller (signature + expiry
+    /// + `op == Put` + `file_id`/`version_id` match).
+    ///
+    /// This method performs the same defense-in-depth policy size check as the
+    /// user-facing path.
+    ///
+    /// The actor in the audit row is recorded as `"sidecar"` with the `Uuid::nil`
+    /// actor id, since no user identity is present in a sidecar callback.
+    ///
+    /// @cpt-cf-file-storage-fr-audit-trail
+    pub async fn finalize_upload_by_token(
+        &self,
+        claims: &Claims,
+        size: i64,
+        hash_value: Vec<u8>,
+    ) -> Result<(), DomainError> {
+        let file_id = claims.file_id;
+        let version_id = claims.version_id;
+
+        // Fetch file via allow_all scope: the data plane operates on a
+        // (file_id, version_id) pair already minted by the control plane.
+        let file = self
+            .store
+            .require_file(&AccessScope::allow_all(), file_id)
+            .await?;
+
+        // Defense-in-depth size check: re-enforce the policy size ceiling at
+        // finalization time even though the sidecar already checked the upload
+        // constraint in the signed URL.
+        // @cpt-cf-file-storage-fr-size-limits-policy
+        let version = self.store.get_version(file_id, version_id).await?;
+        let (version_mime, backend_id) = version.as_ref().map_or_else(
+            || ("application/octet-stream".to_owned(), String::new()),
+            |v| (v.mime_type.clone(), v.backend_id.clone()),
+        );
+        let policy = self
+            .get_effective_policy_internal(file.tenant_id, file.owner_id)
+            .await?;
+        let backend = if backend_id.is_empty() {
+            self.backends.default_backend()
+        } else {
+            self.backends.get(&backend_id)?
+        };
+        let effective_max = PolicyResolver::compute_effective_max_bytes(
+            &policy,
+            &version_mime,
+            backend.capabilities().max_size_bytes,
+        );
+        if let Some(limit) = effective_max
+            && size > 0
+            && size.cast_unsigned() > limit
+        {
+            return Err(DomainError::policy_size_exceeded(
+                limit,
+                "policy size limit",
+            ));
+        }
+
+        // @cpt-cf-file-storage-fr-audit-trail
+        // Actor is "sidecar" with nil UUID — no user identity is available in
+        // a token-authenticated callback.
+        let audit = AuditEntry::success(
+            file.tenant_id,
+            "sidecar",
+            Uuid::nil(),
+            Some(file_id),
+            AuditOperation::FinalizeVersion,
+            serde_json::json!({ "version_id": version_id, "size": size }),
+        );
+
+        let ok = self
+            .store
+            .finalize_version(file_id, version_id, size, hash_value, audit)
+            .await?;
+        if !ok {
+            return Err(DomainError::version_not_found(file_id, version_id));
+        }
+        Ok(())
     }
 
     /// Delete a backend blob, logging (not failing) on error. A failed delete
