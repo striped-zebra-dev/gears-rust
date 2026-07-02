@@ -1,225 +1,343 @@
-# FEATURE — `multipart-coordinator` (server-authoritative multipart upload)
+Created:  2026-07-02 by Constructor Tech
+Updated:  2026-07-02 by Constructor Tech
+# Feature: Multipart Upload Coordinator
 
-**Component**: `multipart-coordinator`
-**Implements**: PRD `cpt-cf-file-storage-fr-multipart-upload`
-**Depends on**: `cpt-cf-file-storage-adr-sidecar-data-plane` (ADR-0003),
-`cpt-cf-file-storage-adr-signed-url-transport` (ADR-0004),
-`cpt-cf-file-storage-adr-content-hash-selection` (ADR-0002)
-**Also enforces**: PRD `cpt-cf-file-storage-fr-size-limits-policy`,
-`cpt-cf-file-storage-fr-storage-quota`, `cpt-cf-file-storage-fr-allowed-types-policy`,
-`cpt-cf-file-storage-fr-audit-trail`, `cpt-cf-file-storage-fr-file-events`
-**Status**: authored (P2). Supersedes the interim client-driven multipart shipped
-under P2-M3 — see [§8 Migration from the interim implementation](#8-migration-from-the-interim-implementation).
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-featstatus-multipart-coordinator-implemented`
 
-DESIGN [§4.6](../DESIGN.md) fixes the *shape* of multipart upload; this document
-owns the detailed contract (request/response envelopes, error codes, token
-claims, persistence, resumability) that DESIGN deliberately deferred.
+
 
 <!-- toc -->
 
-- [1. Principle: the server owns the plan](#1-principle-the-server-owns-the-plan)
-- [2. Lifecycle & endpoints](#2-lifecycle--endpoints)
-- [3. The parts plan](#3-the-parts-plan)
-- [4. Per-part signed URL & the size claim](#4-per-part-signed-url--the-size-claim)
-- [5. Hashing (BLAKE3 subtree)](#5-hashing-blake3-subtree)
-- [6. Persistence & schema deltas](#6-persistence--schema-deltas)
-- [7. Enforcement matrix (size / quota / type)](#7-enforcement-matrix-size--quota--type)
-- [8. Migration from the interim implementation](#8-migration-from-the-interim-implementation)
-- [9. Traceability](#9-traceability)
+- [1. Feature Context](#1-feature-context)
+  - [1.1 Overview](#11-overview)
+  - [1.2 Purpose](#12-purpose)
+  - [1.3 Actors](#13-actors)
+  - [1.4 References](#14-references)
+- [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
+  - [Initiate Multipart Upload](#initiate-multipart-upload)
+  - [Upload a Part](#upload-a-part)
+  - [Complete Multipart Upload](#complete-multipart-upload)
+  - [Abort Multipart Upload](#abort-multipart-upload)
+- [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
+  - [Compute Parts Plan](#compute-parts-plan)
+  - [Enforce Per-Part Size Claim at Sidecar](#enforce-per-part-size-claim-at-sidecar)
+  - [Combine Part Hashes at Complete](#combine-part-hashes-at-complete)
+- [4. States (CDSL)](#4-states-cdsl)
+  - [Multipart Session State Machine](#multipart-session-state-machine)
+- [5. Definitions of Done](#5-definitions-of-done)
+  - [Initiate Endpoint with Server-Authoritative Plan](#initiate-endpoint-with-server-authoritative-plan)
+  - [Sidecar Per-Part Enforcement](#sidecar-per-part-enforcement)
+  - [Complete Endpoint with Hash Combination](#complete-endpoint-with-hash-combination)
+  - [Abort Endpoint](#abort-endpoint)
+  - [Introspect and Resume Endpoint](#introspect-and-resume-endpoint)
+  - [Schema: multipart_uploads Plan Columns](#schema-multipart_uploads-plan-columns)
+- [6. Acceptance Criteria](#6-acceptance-criteria)
 
 <!-- /toc -->
 
-## 1. Principle: the server owns the plan
+## 1. Feature Context
 
-Multipart upload is **server-authoritative**. The client declares its *intent*
-(total size, preferred part size, desired concurrency); the control plane
-computes and returns the **exact** parts plan — every part's `part_number`,
-`offset`, and `size`, plus **one signed URL per part** pointing at the sidecar.
-The client never chooses part boundaries and can never upload a part that
-deviates from the plan.
+- [ ] `p2` - `cpt-cf-file-storage-feature-multipart-coordinator`
 
-This reverses the earlier client-driven `.../parts/{n}` draft (DESIGN §4.6). Two
-properties fall out of server-authority that the client-driven model cannot give:
+### 1.1 Overview
 
-- **Per-part size is enforced before any bytes are stored.** Each part's exact
-  size is a **claim inside its signed URL**; the sidecar rejects a body whose
-  length does not match the claim, so oversized bytes never reach the backend.
-  This is what fully closes the abuse vector left open by the interim model
-  (a client declaring a small `declared_size` but uploading large parts).
-- **Part boundaries can be aligned to the BLAKE3 chunk tree**, making the
-  per-part subtree hashes composable into the root at `complete` (ADR-0002).
+Server-authoritative multipart upload coordinator for file-storage: the client declares total size and a preferred part size; the control plane computes the exact parts plan (part_number, offset, size) and returns one signed sidecar URL per part. The client uploads each part directly to the sidecar, which enforces the declared size before writing any bytes. The control plane then combines per-part hashes into the root hash at complete and binds the new file version atomically.
 
-Byte movement never touches the control plane (ADR-0003): the control plane is
-JSON-only and returns opaque signed URLs; all part bytes flow to the **sidecar**.
+**Traces to**: `cpt-cf-file-storage-fr-multipart-upload`, `cpt-cf-file-storage-fr-size-limits-policy`, `cpt-cf-file-storage-fr-storage-quota`
 
-## 2. Lifecycle & endpoints
+### 1.2 Purpose
 
-Control-plane routes are under `/api/file-storage/v1`; the part-upload route is a
-sidecar URL the client receives ready-made (it is never hand-constructed).
+Provide a safe, resumable, server-controlled multipart upload path that eliminates the abuse vector of the earlier client-driven model: a client declaring a small `declared_size` but uploading arbitrarily large parts. Because each part's exact byte length is a claim inside its signed URL and the sidecar enforces it with HTTP 413 before writing, oversized bytes never reach the backend.
 
-| # | Method / path | Plane | Purpose |
-|---|---|---|---|
-| P2-1 | `POST /files/{id}/multipart` | control | Initiate: validate intent, pre-register a `pending` version, create the backend session, return the parts plan + per-part signed URLs. |
-| P2-2 | `PUT <signed part url>` | **sidecar** | Upload one part (raw body). Sidecar enforces the size claim, stores the part, persists its BLAKE3 subtree hash. |
-| P2-3 | `POST /files/{id}/multipart/{upload_id}/complete` | control | Combine subtree hashes → root, verify total size, bind the version under `If-Match` (CAS). |
-| P2-4 | `DELETE /files/{id}/multipart/{upload_id}` | control | Abort: mark aborted, abort the backend handle, discard parts, delete the pending version. |
-| P2-5 | `GET /files/{id}/multipart/{upload_id}` | control | Introspect: return the plan + which parts are uploaded (drives resume). |
+This feature supersedes the interim P2-M3 client-driven implementation in which parts were PUT to the control-plane route `PUT /files/{id}/multipart/{upload_id}/parts/{part_number}`. That control-plane byte route is removed (ADR-0003). Byte movement now flows exclusively through sidecar signed URLs (ADR-0004). Part boundaries are aligned to BLAKE3 chunk boundaries so per-part subtree hashes compose into the root hash at complete (ADR-0002; SHA-256 is the effective algorithm in P2, with BLAKE3 deferred).
 
-Every mutating step **MUST** apply the same authorization, audit, and event
-requirements as single-part upload (PRD `cpt-cf-file-storage-fr-multipart-upload`).
+**Requirements**: `cpt-cf-file-storage-fr-multipart-upload`, `cpt-cf-file-storage-fr-size-limits-policy`, `cpt-cf-file-storage-fr-storage-quota`
 
-## 3. The parts plan
+**Principles**: `cpt-cf-file-storage-principle-control-no-content`, `cpt-cf-file-storage-principle-signed-urls`
 
-**`P2-1` request** (`application/json`):
+### 1.3 Actors
 
-| Field | Type | Req | Description |
-|---|---|---|---|
-| `declared_mime` | string | yes | Validated against the effective allowed-types policy (`415` on reject). |
-| `declared_size` | uint64 | yes | Total object size. Gated at initiate against the effective size limit (`413`) and storage quota (`507`) — see [§7](#7-enforcement-matrix-size--quota--type). |
-| `preferred_part_size` | uint64 | no | Client hint. The server **MAY** override it to satisfy the backend's minimum part size and BLAKE3 alignment. |
-| `concurrency` | uint32 | no | Advisory hint for how many parts the client intends to upload in parallel; does not change the plan. |
+| Actor | Role in Feature |
+|-------|-----------------|
+| `cpt-cf-file-storage-actor-platform-user` | Initiates a multipart upload by declaring intent; receives the parts plan; PUTs each part body to the sidecar URL; calls complete or abort |
+| `cpt-cf-file-storage-actor-cf-gears` | Peer gear / service that drives multipart upload on behalf of a user; also subject to the same plan, quota, and enforcement rules |
 
-**`P2-1` response** (`application/json`):
+### 1.4 References
 
-```json
-{
-  "upload_id": "uuid",
-  "version_id": "uuid",
-  "part_hash_algorithm": "BLAKE3",
-  "part_size": 8388608,
-  "parts": [
-    { "part_number": 1, "offset": 0,       "size": 8388608, "upload_url": "https://sidecar/.../part?fs-token=…" },
-    { "part_number": 2, "offset": 8388608, "size": 8388608, "upload_url": "…" },
-    { "part_number": 3, "offset": 16777216,"size": 2097152, "upload_url": "…" }
-  ],
-  "expires_at": "RFC3339"
-}
-```
+- **PRD**: [PRD.md](../PRD.md)
+- **Design**: [DESIGN.md](../DESIGN.md) -- Section 4.6 (Multipart upload shape)
+- **API contract**: [api.md](../api.md) -- P2 Multipart upload endpoints
+- **ADR**: [ADR-0002](../ADR/0002-cpt-cf-file-storage-adr-content-hash-selection.md) -- Content hash selection (BLAKE3 subtree)
+- **ADR**: [ADR-0003](../ADR/0003-cpt-cf-file-storage-adr-sidecar-data-plane.md) -- Sidecar data plane (no bytes through control plane)
+- **ADR**: [ADR-0004](../ADR/0004-cpt-cf-file-storage-adr-signed-url-transport.md) -- Signed-URL transport (PASETO v4.public)
+- **Dependencies**: Signed-URL transport (ADR-0004), sidecar data plane (ADR-0003)
 
-The server chooses `part_size` (uniform except the final part) as
-`max(preferred_part_size, backend.min_part_size)`, rounded to a BLAKE3-friendly
-boundary, and derives `parts.len() = ceil(declared_size / part_size)`. The plan is
-**deterministic** from `(declared_size, part_size)`, so it can be recomputed for
-resume without persisting every row (see [§6](#6-persistence--schema-deltas)).
+## 2. Actor Flows (CDSL)
 
-## 4. Per-part signed URL & the size claim
+User-facing interactions that start with an actor (human or external system) and describe the end-to-end flow of a use case.
 
-Each `upload_url` is a PASETO `v4.public` token (ADR-0004) whose claim-set binds
-the part to the plan. Claims **MUST** include:
+### Initiate Multipart Upload
 
-| Claim | Purpose |
-|---|---|
-| `upload_id`, `file_id`, `version_id` | Scope the URL to this session/version. |
-| `part_number`, `offset` | Where the part lands. |
-| `size` | **Exact** byte length the sidecar will accept. |
-| `op = "multipart_part"`, `exp` | Verb + expiry. |
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-flow-multipart-initiate`
 
-On `PUT`, the sidecar **MUST**:
+**Actor**: `cpt-cf-file-storage-actor-platform-user`
 
-1. Verify the token (asymmetric; sidecar can never mint — ADR-0004).
-2. **Reject with `413` if the request body length ≠ `size`** — before writing
-   anything. This is the point that makes oversized parts unstorable.
-3. Write the part: for a `multipart_native` backend via `PutPart`
-   (`backend_upload_handle`); otherwise offset-write into the single new-version
-   object `/{file_id}/{version_id}` at `offset` (never mutating an existing
-   object).
-4. Compute the part's BLAKE3 subtree hash and persist the part row via the SDK
-   ([§5](#5-hashing-blake3-subtree), [§6](#6-persistence--schema-deltas)).
+**Success Scenarios**:
+- Client receives the exact parts plan (part_number, offset, size) and one signed sidecar URL per part; a pending version is pre-registered; multipart session is in_progress
 
-Re-`PUT` of the same `(upload_id, part_number)` is **idempotent** (overwrite),
-which is what makes resume safe. If a part URL has expired, the client re-fetches
-fresh URLs from `P2-5` (which re-issues them for missing parts).
+**Error Scenarios**:
+- `declared_mime` rejected by effective allowed-types policy -- 415 Unsupported Media Type
+- `declared_size` exceeds effective size limit -- 413 Content Too Large
+- `declared_size` exceeds available storage quota -- 507 Insufficient Storage
+- File not found or client lacks write permission -- 404 / 403
 
-## 5. Hashing (BLAKE3 subtree)
+**Steps**:
+1. [ ] - `p1` - Client: POST /api/file-storage/v1/files/{id}/multipart with body {declared_mime, declared_size, preferred_part_size?, concurrency?} - `inst-init-request`
+2. [ ] - `p1` - API: validate declared_mime against the effective allowed-types policy; RETURN 415 if rejected - `inst-init-mime-check`
+3. [ ] - `p1` - API: validate declared_size <= effective per-file size limit; RETURN 413 if exceeded - `inst-init-size-check`
+4. [ ] - `p1` - API: validate declared_size against storage quota; RETURN 507 if exceeded - `inst-init-quota-check`
+5. [ ] - `p1` - Algorithm: compute parts plan using `cpt-cf-file-storage-algo-compute-parts-plan` - `inst-init-plan`
+6. [ ] - `p1` - DB: INSERT into multipart_uploads (upload_id, file_id, version_id, declared_size, part_size, status=in_progress, expires_at) - `inst-init-db-session`
+7. [ ] - `p1` - DB: INSERT pending version row into file_versions (version_id, file_id, status=pending) - `inst-init-db-version`
+8. [ ] - `p1` - FOR EACH part in the plan: mint a PASETO v4.public signed URL with claims {upload_id, file_id, version_id, part_number, offset, size, op="multipart_part", exp} - `inst-init-sign-urls`
+9. [ ] - `p1` - RETURN 200 {upload_id, version_id, part_hash_algorithm, part_size, parts: [{part_number, offset, size, upload_url}], expires_at} - `inst-init-return`
 
-Part boundaries are chosen so each part is a BLAKE3 **subtree**; the sidecar
-persists each part's subtree hash in `multipart_upload_parts.part_hash`, and
-`complete` combines them into the root (ADR-0002). The effective algorithm is
-bounded by the backend's `allowed_algorithms`; when a backend does not allow
-BLAKE3, the coordinator falls back to a streaming single-pass algorithm from the
-allow-list and computes the root at `complete` from the reassembled object.
-Persisted part hashes make an upload **resumable** and **crash-durable**.
+### Upload a Part
 
-## 6. Persistence & schema deltas
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-flow-multipart-upload-part`
 
-Existing tables (`file_storage.multipart_uploads`,
-`file_storage.multipart_upload_parts`) need the following deltas to carry the
-plan. (Schema changes ship with the feature's migration; documented here, not
-applied by this doc.)
+**Actor**: `cpt-cf-file-storage-actor-platform-user` (part PUT goes directly to sidecar, not through control plane)
 
-`multipart_uploads` — add:
+**Success Scenarios**:
+- Part body is accepted, written, and its subtree hash is persisted; re-PUT of same (upload_id, part_number) is idempotent (overwrite)
 
-- `version_id uuid NOT NULL` — the pre-registered pending version this session
-  binds at complete (today the linkage is not persisted on the session row).
-- `declared_size bigint NOT NULL CHECK (declared_size >= 0)` — the gated total.
-- `part_size bigint NOT NULL` — the server-chosen plan unit; with `declared_size`
-  this reconstitutes the full plan for resume without a per-part plan table.
+**Error Scenarios**:
+- Request body length does not match the size claim in the signed token -- 413 before any bytes written
+- Signed token is invalid, expired, or tampered -- 401 Unauthorized
+- Sidecar backend write failure -- 500
 
-`multipart_upload_parts` — the existing `size` column stores the **actual**
-written length; the **expected** size is authoritative in the signed token, so no
-`expected_size` column is required. `part_hash` continues to hold the BLAKE3
-subtree hash.
+**Steps**:
+1. [ ] - `p1` - Client: PUT <signed_part_url> with raw body of exactly `size` bytes - `inst-part-request`
+2. [ ] - `p1` - Sidecar: verify PASETO token (asymmetric; sidecar cannot mint tokens -- ADR-0004) - `inst-part-verify-token`
+3. [ ] - `p1` - **IF** token invalid or expired **RETURN** 401 Unauthorized - `inst-part-token-reject`
+4. [ ] - `p1` - Algorithm: enforce per-part size claim using `cpt-cf-file-storage-algo-enforce-part-size` -- RETURN 413 before writing if mismatch - `inst-part-size-enforce`
+5. [ ] - `p1` - **IF** backend is multipart_native: call backend PutPart(upload_handle, part_number, body) - `inst-part-write-native`
+6. [ ] - `p1` - **ELSE** offset-write body into /{file_id}/{version_id} at offset from token (never mutating an existing version object) - `inst-part-write-offset`
+7. [ ] - `p1` - Sidecar: compute SHA-256 subtree hash of the written part bytes (BLAKE3 deferred per ADR-0002; SHA-256 effective in P2) - `inst-part-hash`
+8. [ ] - `p1` - DB: UPSERT multipart_upload_parts (upload_id, part_number, size, part_hash) -- idempotent overwrite on re-PUT - `inst-part-db-upsert`
+9. [ ] - `p1` - RETURN 200 {part_number, size, part_hash} - `inst-part-return`
 
-Validated-but-not-persisted today: `declared_size` is currently validated only at
-initiate (see the F2 fix). Persisting it (above) lets `complete` and resume verify
-actual-vs-declared without re-summing, and lets `P2-5` return the plan.
+### Complete Multipart Upload
 
-## 7. Enforcement matrix (size / quota / type)
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-flow-multipart-complete`
 
-Defence in depth — each gate is normative:
+**Actor**: `cpt-cf-file-storage-actor-platform-user`
 
-| Gate | Where | On violation |
-|---|---|---|
-| Allowed MIME | initiate, against effective allowed-types policy | `415` |
-| Declared size ≤ effective max (policy ⋈ backend) | initiate, against `declared_size` | `413` |
-| Storage quota | initiate, quota checked against `declared_size` (not a pessimistic ceiling) | `507` |
-| **Per-part size = token claim** | **sidecar, per `PUT`** | `413` (body never stored) |
-| Total assembled size = `declared_size` | complete, summing actual part sizes | `409`/`413` |
-| First-part magic-bytes vs `declared_mime` | sidecar/complete (`cpt-cf-file-storage-fr-content-type-validation`) | reject + abort |
+**Success Scenarios**:
+- All parts received; root hash computed from part hashes; file version bound and made active under If-Match CAS; session marked completed
 
-The initiate gate blocks *starting* an oversized/over-quota session; the per-part
-claim blocks *storing* oversized bytes; the complete check is the final backstop.
-Abandoned in-flight sessions are reclaimed by the orphan/TTL sweep
-(`cpt-cf-file-storage-fr-orphan-reconciliation`).
+**Error Scenarios**:
+- Not all parts have been uploaded -- 409 Conflict (missing parts list returned)
+- Assembled total size != declared_size -- 409 / 413
+- If-Match ETag does not match current version -- 412 Precondition Failed
+- Magic-bytes of first part mismatch declared_mime -- reject and auto-abort
 
-## 8. Migration from the interim implementation
+**Steps**:
+1. [ ] - `p1` - Client: POST /api/file-storage/v1/files/{id}/multipart/{upload_id}/complete with optional If-Match header - `inst-complete-request`
+2. [ ] - `p1` - DB: SELECT all rows from multipart_upload_parts WHERE upload_id = ? ORDER BY part_number - `inst-complete-load-parts`
+3. [ ] - `p1` - **IF** any part_number in plan [1..N] is missing from the rows **RETURN** 409 with list of missing part numbers - `inst-complete-missing-parts`
+4. [ ] - `p1` - Algorithm: combine part hashes into root hash using `cpt-cf-file-storage-algo-combine-part-hashes` - `inst-complete-combine-hashes`
+5. [ ] - `p1` - Verify SUM(part.size) == declared_size; RETURN 409 if mismatch - `inst-complete-size-verify`
+6. [ ] - `p1` - **IF** If-Match header present: DB: optimistic CAS -- verify current version ETag matches; RETURN 412 if not - `inst-complete-cas`
+7. [ ] - `p1` - DB: UPDATE file_versions SET status=active, content_hash=<root_hash>, size=declared_size WHERE version_id = ? - `inst-complete-activate-version`
+8. [ ] - `p1` - DB: UPDATE multipart_uploads SET status=completed WHERE upload_id = ? - `inst-complete-db-session`
+9. [ ] - `p1` - RETURN 200 {version_id, content_hash, size} - `inst-complete-return`
 
-The former P2-M3 multipart was **client-driven**: the client picked `part_number`
-and `PUT` raw bytes to a **control-plane** route
-(`PUT /files/{id}/multipart/{upload_id}/parts/{part_number}`), which proxied them
-to the backend. That contradicted DESIGN §4.6 (server owns the plan) and ADR-0003
-(no bytes through the control plane), and it is why per-part size could not be
-enforced.
+### Abort Multipart Upload
 
-This feature **has superseded it** (shipped):
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-flow-multipart-abort`
 
-- `initiate` returns a parts plan + per-part sidecar signed URLs (was: a single
-  session handle).
-- Part bytes move to the **sidecar** via those URLs; the control-plane
-  `.../parts/{n}` byte route is **removed**.
-- Per-part size is enforced at the sidecar via the token `size` claim (`413`
-  before any write).
-- `declared_size` and `part_size` are persisted on `multipart_uploads`
-  (migration `m20260701_000002_multipart_plan_columns`) so the plan is
-  reconstitutable for resume.
+**Actor**: `cpt-cf-file-storage-actor-platform-user`
 
-The already-landed initiate-time `declared_size` gate (PR #4170 F2) is retained
-as the up-front rejection, and the complete-time total-size check
-(assembled size == `declared_size`) remains as defence-in-depth.
+**Success Scenarios**:
+- Session marked aborted; pending version deleted; backend multipart handle aborted; uploaded part bytes discarded
 
-**Implementation note:** per-part hashes are **SHA-256** in P2 (see §5 — the
-BLAKE3 subtree scheme is deferred). For a `multipart_native` backend the sidecar
-drives the backend's native multipart API; the thin local-fs sidecar binary
-offset-writes each part into a per-part object and relies on `complete` to
-assemble.
+**Error Scenarios**:
+- Session already completed or aborted -- 409 Conflict
+- Session not found or client lacks write permission -- 404 / 403
 
-## 9. Traceability
+**Steps**:
+1. [ ] - `p1` - Client: DELETE /api/file-storage/v1/files/{id}/multipart/{upload_id} - `inst-abort-request`
+2. [ ] - `p1` - DB: SELECT multipart_uploads WHERE upload_id = ? -- verify status == in_progress; RETURN 409 if already completed/aborted - `inst-abort-check-status`
+3. [ ] - `p1` - **IF** backend is multipart_native: call backend AbortMultipart(upload_handle) to discard backend-side parts - `inst-abort-backend`
+4. [ ] - `p1` - DB: DELETE FROM multipart_upload_parts WHERE upload_id = ? - `inst-abort-delete-parts`
+5. [ ] - `p1` - DB: DELETE pending version row from file_versions WHERE version_id = ? AND status = pending - `inst-abort-delete-version`
+6. [ ] - `p1` - DB: UPDATE multipart_uploads SET status=aborted WHERE upload_id = ? - `inst-abort-db-session`
+7. [ ] - `p1` - RETURN 204 No Content - `inst-abort-return`
 
-| Artifact | Link |
-|---|---|
-| Requirement | PRD `cpt-cf-file-storage-fr-multipart-upload` |
-| Design shape | [DESIGN §4.6](../DESIGN.md) |
-| HTTP contract | [api.md — P2 Multipart upload](../api.md) |
-| Sidecar data plane | [ADR-0003](../ADR/0003-cpt-cf-file-storage-adr-sidecar-data-plane.md) |
-| Signed-URL transport | [ADR-0004](../ADR/0004-cpt-cf-file-storage-adr-signed-url-transport.md) |
-| Content-hash selection | [ADR-0002](../ADR/0002-cpt-cf-file-storage-adr-content-hash-selection.md) |
+## 3. Processes / Business Logic (CDSL)
+
+Internal system functions that do not interact with actors directly; called by actor flows.
+
+### Compute Parts Plan
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-algo-compute-parts-plan`
+
+**Input**: declared_size (uint64), preferred_part_size (uint64 or null), backend.min_part_size (uint64), backend.allowed_algorithms
+**Output**: {part_size, parts: [{part_number, offset, size}], part_hash_algorithm}
+
+**Steps**:
+1. [ ] - `p1` - Compute candidate_part_size = max(preferred_part_size ?? backend.min_part_size, backend.min_part_size) - `inst-plan-candidate`
+2. [ ] - `p1` - Round candidate_part_size up to the nearest BLAKE3 chunk-tree boundary (1 MiB multiple) to make part hashes composable (ADR-0002) - `inst-plan-round`
+3. [ ] - `p1` - Compute part_count = ceil(declared_size / part_size) - `inst-plan-count`
+4. [ ] - `p1` - FOR EACH i in [1..part_count]: compute offset = (i-1) * part_size; size = min(part_size, declared_size - offset) - `inst-plan-parts`
+5. [ ] - `p1` - **IF** BLAKE3 is in backend.allowed_algorithms: set part_hash_algorithm = BLAKE3 - `inst-plan-algo-blake3`
+6. [ ] - `p1` - **ELSE** set part_hash_algorithm = first algorithm in allowed_algorithms (SHA-256 effective in P2) - `inst-plan-algo-fallback`
+7. [ ] - `p1` - RETURN {part_size, parts, part_hash_algorithm} -- the plan is deterministic from (declared_size, part_size) and can be recomputed for resume from the persisted columns - `inst-plan-return`
+
+### Enforce Per-Part Size Claim at Sidecar
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-algo-enforce-part-size`
+
+**Input**: request body (stream), size_claim (uint64 from signed token)
+**Output**: accepted body bytes, or 413 rejection before any write
+
+**Steps**:
+1. [ ] - `p1` - Read Content-Length header from the incoming PUT request - `inst-enforce-read-cl`
+2. [ ] - `p1` - **IF** Content-Length is present AND Content-Length != size_claim: RETURN HTTP 413 without buffering or writing any bytes - `inst-enforce-cl-reject`
+3. [ ] - `p1` - Stream the body; count bytes as they arrive - `inst-enforce-stream`
+4. [ ] - `p1` - **IF** byte count exceeds size_claim before body ends: RETURN HTTP 413 -- abort the write mid-stream; rollback any partially written bytes - `inst-enforce-oversize`
+5. [ ] - `p1` - **IF** body ends before size_claim bytes received: RETURN HTTP 400 Bad Request (short body) - `inst-enforce-undersize`
+6. [ ] - `p1` - RETURN accepted bytes (exactly size_claim bytes) -- proceed to write - `inst-enforce-accept`
+
+### Combine Part Hashes at Complete
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-algo-combine-part-hashes`
+
+**Input**: ordered list of (part_number, part_hash) from multipart_upload_parts; part_hash_algorithm
+**Output**: root_hash (hex string)
+
+**Steps**:
+1. [ ] - `p1` - Sort parts by part_number ascending; verify no gaps in [1..N] - `inst-combine-sort`
+2. [ ] - `p1` - **IF** part_hash_algorithm == BLAKE3: combine subtree hashes using BLAKE3 parent-node chaining to derive the root hash (ADR-0002) - `inst-combine-blake3`
+3. [ ] - `p1` - **ELSE** (SHA-256 or other fallback in P2): retrieve the assembled object from the backend and compute a streaming single-pass hash over the full content - `inst-combine-sha256`
+4. [ ] - `p1` - RETURN root_hash - `inst-combine-return`
+
+## 4. States (CDSL)
+
+### Multipart Session State Machine
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-state-multipart-session`
+
+**States**: in_progress, completed, aborted
+
+**Initial State**: in_progress
+
+**Transitions**:
+1. [ ] - `p1` - **FROM** in_progress **TO** completed **WHEN** complete flow verifies all parts and activates the file version - `inst-st-to-completed`
+2. [ ] - `p1` - **FROM** in_progress **TO** aborted **WHEN** abort flow is called explicitly by the client - `inst-st-to-aborted`
+3. [ ] - `p1` - **FROM** in_progress **TO** aborted **WHEN** TTL/orphan-reconciliation sweep expires an unfinished session (`cpt-cf-file-storage-fr-orphan-reconciliation`) - `inst-st-ttl-abort`
+
+## 5. Definitions of Done
+
+### Initiate Endpoint with Server-Authoritative Plan
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-dod-multipart-initiate`
+
+The system **MUST** implement `POST /api/file-storage/v1/files/{id}/multipart` on the control plane. The endpoint validates declared_mime, declared_size, and storage quota; calls `cpt-cf-file-storage-algo-compute-parts-plan`; pre-registers a pending version; persists the multipart session with declared_size and part_size; mints one PASETO v4.public signed URL per part (claims: upload_id, file_id, version_id, part_number, offset, size, op, exp); and returns the full parts plan.
+
+**Implements**:
+- `cpt-cf-file-storage-flow-multipart-initiate`
+- `cpt-cf-file-storage-algo-compute-parts-plan`
+
+**Touches**:
+- API: `POST /api/file-storage/v1/files/{id}/multipart`
+- DB Table: `multipart_uploads`
+- DB Table: `file_versions`
+
+### Sidecar Per-Part Enforcement
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-dod-multipart-sidecar-enforcement`
+
+The system **MUST** implement the sidecar part-upload handler: verify the PASETO token; call `cpt-cf-file-storage-algo-enforce-part-size` to reject with HTTP 413 before writing if the body length does not match the size claim; write the part bytes to the backend (PutPart for multipart_native, offset-write for offset backends); compute the per-part hash; and upsert the part row. Re-PUT of the same (upload_id, part_number) MUST be idempotent.
+
+**Implements**:
+- `cpt-cf-file-storage-flow-multipart-upload-part`
+- `cpt-cf-file-storage-algo-enforce-part-size`
+
+**Touches**:
+- API: `PUT <sidecar signed part URL>`
+- DB Table: `multipart_upload_parts`
+
+### Complete Endpoint with Hash Combination
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-dod-multipart-complete`
+
+The system **MUST** implement `POST /api/file-storage/v1/files/{id}/multipart/{upload_id}/complete`: verify all plan parts are present; call `cpt-cf-file-storage-algo-combine-part-hashes` to derive the root hash; verify assembled size == declared_size; apply If-Match CAS if present; activate the file version; mark the session completed.
+
+**Implements**:
+- `cpt-cf-file-storage-flow-multipart-complete`
+- `cpt-cf-file-storage-algo-combine-part-hashes`
+
+**Touches**:
+- API: `POST /api/file-storage/v1/files/{id}/multipart/{upload_id}/complete`
+- DB Table: `multipart_uploads`
+- DB Table: `multipart_upload_parts`
+- DB Table: `file_versions`
+
+### Abort Endpoint
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-dod-multipart-abort`
+
+The system **MUST** implement `DELETE /api/file-storage/v1/files/{id}/multipart/{upload_id}`: verify session is in_progress; abort the backend handle (multipart_native only); delete part rows and the pending version; mark the session aborted.
+
+**Implements**:
+- `cpt-cf-file-storage-flow-multipart-abort`
+
+**Touches**:
+- API: `DELETE /api/file-storage/v1/files/{id}/multipart/{upload_id}`
+- DB Table: `multipart_uploads`
+- DB Table: `multipart_upload_parts`
+- DB Table: `file_versions`
+
+### Introspect and Resume Endpoint
+
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-dod-multipart-introspect`
+
+The system **MUST** implement `GET /api/file-storage/v1/files/{id}/multipart/{upload_id}`: return the original plan (recomputed from declared_size + part_size) and the list of uploaded parts (from multipart_upload_parts); re-issue fresh signed URLs for parts not yet uploaded, enabling resumable multipart sessions after expiry.
+
+**Implements**:
+- `cpt-cf-file-storage-flow-multipart-initiate`
+
+**Touches**:
+- API: `GET /api/file-storage/v1/files/{id}/multipart/{upload_id}`
+- DB Table: `multipart_uploads`
+- DB Table: `multipart_upload_parts`
+
+### Schema: multipart_uploads Plan Columns
+
+- [ ] `p1` - **ID**: `cpt-cf-file-storage-dod-multipart-schema-plan-columns`
+
+The system **MUST** add `version_id uuid NOT NULL`, `declared_size bigint NOT NULL CHECK (declared_size >= 0)`, and `part_size bigint NOT NULL` to the `multipart_uploads` table via migration `m20260701_000002_multipart_plan_columns`. These three columns make the plan deterministic from the session row (no per-part plan table needed), enable complete-time size verification without re-summing parts, and allow the introspect endpoint to reconstruct the plan for resume.
+
+**Implements**:
+- `cpt-cf-file-storage-flow-multipart-initiate`
+- `cpt-cf-file-storage-flow-multipart-complete`
+- `cpt-cf-file-storage-algo-compute-parts-plan`
+
+**Touches**:
+- DB Table: `multipart_uploads`
+
+## 6. Acceptance Criteria
+
+- [x] `POST /api/file-storage/v1/files/{id}/multipart` returns a parts plan with one signed sidecar URL per part; each URL token includes part_number, offset, size, op, and exp claims
+- [x] The parts plan is server-computed from declared_size and the effective part_size; clients cannot choose part boundaries
+- [x] The control-plane route `PUT /files/{id}/multipart/{upload_id}/parts/{part_number}` does not exist; all part bytes flow through sidecar signed URLs only (ADR-0003)
+- [x] The sidecar rejects a PUT whose body length does not match the size claim in the token with HTTP 413 before writing any bytes
+- [x] Re-PUT of the same (upload_id, part_number) is idempotent; the part row is overwritten and no duplicate rows are created
+- [x] `POST .../complete` rejects with 409 if any part from the plan is missing; assembled size mismatch also returns 409/413
+- [x] `POST .../complete` activates the file version with the root hash derived from part hashes; session status becomes completed
+- [x] `DELETE .../multipart/{upload_id}` marks the session aborted, deletes part rows and the pending version, and aborts the backend handle for multipart_native backends
+- [x] Initiating a multipart upload with declared_size exceeding the effective size-limit policy returns 413; exceeding storage quota returns 507; unsupported MIME returns 415
+- [x] multipart_uploads rows carry version_id, declared_size, and part_size columns (migration m20260701_000002_multipart_plan_columns)
+- [ ] `GET .../multipart/{upload_id}` returns the plan recomputed from persisted columns and re-issues fresh signed URLs for missing parts (p2 resumability)
