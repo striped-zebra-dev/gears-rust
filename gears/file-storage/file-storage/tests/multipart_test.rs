@@ -344,6 +344,117 @@ async fn multipart_happy_path_in_memory() {
     assert_eq!(content, Bytes::from_static(b"Hello, World!"));
 }
 
+// -- 1b. Full lifecycle: create -> multipart upload -> bind -> delete ---------
+
+/// A multipart-uploaded file must be fully removable end to end: create it,
+/// upload its content through the server-authoritative multipart flow, complete
+/// + bind it, confirm it exists and is readable, then delete it and confirm the
+/// file (and its versions, via FK cascade) are gone.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+/// @cpt-cf-file-storage-fr-audit-trail
+#[tokio::test]
+async fn multipart_full_lifecycle_create_to_delete() {
+    let db = build_db().await;
+    let backend: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("mem"));
+    let backends = BackendRegistry::new(vec![Arc::clone(&backend)], "mem").expect("registry");
+    let issuer = Arc::new(Issuer::generate(3600).expect("issuer"));
+    let authorizer: Arc<dyn file_storage::domain::authz::Authorizer> =
+        Arc::new(TenantOnlyAuthorizer);
+    let cfg = ServiceConfig {
+        default_url_ttl_secs: 3600,
+        sidecar_base_url: "http://sidecar.test".to_owned(),
+        default_page_size: 50,
+        max_page_size: 1000,
+        idempotency_ttl_secs: 86400,
+    };
+    let store = Store::new(Arc::clone(&db));
+    let multipart_store: Arc<dyn MultipartStore> = Arc::new(store.clone());
+    let svc = FileService::new(
+        store.clone(),
+        backends.clone(),
+        Arc::clone(&issuer),
+        Arc::clone(&authorizer),
+        cfg,
+        None,
+        None,
+    );
+    let msvc = MultipartService::new(
+        Arc::clone(&multipart_store),
+        backends,
+        Arc::clone(&authorizer),
+        None,
+        issuer,
+        "http://sidecar.test".to_owned(),
+        3600,
+    );
+    let ctx = ctx(Uuid::now_v7());
+
+    // Create -> initiate -> upload the single part -> complete -> bind.
+    let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    let declared_size = 13u64;
+    let plan = msvc
+        .initiate_multipart_upload(
+            &ctx,
+            ticket.file_id,
+            "application/octet-stream",
+            declared_size,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let session = multipart_store
+        .get_multipart_upload(plan.upload_id)
+        .await
+        .unwrap()
+        .expect("session must exist");
+    let backend_path = format!("/{}/{}", ticket.file_id, plan.version_id);
+    simulate_sidecar_put_part(
+        &multipart_store,
+        &backend,
+        &plan,
+        &backend_path,
+        &session.backend_upload_handle,
+        1,
+        Bytes::from_static(b"Hello, World!"),
+    )
+    .await;
+    msvc.complete_multipart_upload(&ctx, ticket.file_id, plan.upload_id)
+        .await
+        .unwrap();
+    svc.bind(&ctx, ticket.file_id, plan.version_id, None)
+        .await
+        .unwrap();
+
+    // The multipart file exists and has its bound version before deletion.
+    svc.get_file(&ctx, ticket.file_id)
+        .await
+        .expect("file must exist before delete");
+    assert!(
+        svc.list_versions(&ctx, ticket.file_id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|v| v.version_id == plan.version_id),
+        "the completed multipart version must be present before delete",
+    );
+
+    // Delete the multipart-uploaded file (If-Match `*` = unconditional).
+    svc.delete_file(&ctx, ticket.file_id, Some("*"))
+        .await
+        .expect("delete must succeed");
+
+    // The file — and its versions via FK cascade — must be gone.
+    assert!(
+        matches!(
+            svc.get_file(&ctx, ticket.file_id).await,
+            Err(DomainError::FileNotFound { .. })
+        ),
+        "file must be FileNotFound after delete",
+    );
+}
+
 // -- 2. LocalFsBackend rejects multipart -------------------------------------
 
 /// @cpt-cf-file-storage-fr-multipart-upload
