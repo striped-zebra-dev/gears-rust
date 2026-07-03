@@ -5,20 +5,20 @@
 //! the conversion into an RFC-9457 problem document happens at the API
 //! boundary (Phase 14), not here.
 //!
-//! Conversions are provided for the three error sources every service is
-//! likely to encounter:
-//! - `sea_orm::DbErr` — repository / SeaORM-driven failures.
+//! Conversions from plugin and generic errors live here:
 //! - `chat_engine_sdk::error::PluginError` — failures bubbled up from
 //!   backend plugins (routed using the SDK's status / user-facing matrix).
 //! - `anyhow::Error` — anything else (always classified as `Internal`).
+//!
+//! Conversions from database error types (`sea_orm::DbErr`,
+//! `toolkit_db::DbError`, `toolkit_db::secure::ScopeError`) live in
+//! `infra::db::error_map` so the domain layer stays free of infrastructure
+//! imports (DE0301); the `From` impls are in-crate, so `?` still converts.
 //
 // @cpt-cf-chat-engine-domain-error:p2
 
 use chat_engine_sdk::error::{BoxError, PluginError};
-use sea_orm::DbErr;
 use thiserror::Error;
-use toolkit_db::DbError;
-use toolkit_db::secure::ScopeError;
 use toolkit_macros::domain_model;
 
 /// Service-layer error. Each variant carries enough context to be projected
@@ -159,26 +159,6 @@ impl ChatEngineError {
     }
 }
 
-impl From<DbErr> for ChatEngineError {
-    fn from(err: DbErr) -> Self {
-        match err {
-            DbErr::RecordNotFound(msg) => Self::NotFound {
-                resource: "record",
-                id: msg,
-            },
-            other => {
-                // The typed error is preserved in `source` (reachable via
-                // `.source()` / downcast); the reason is a category label so
-                // we don't flatten the chain into the message (DE1302).
-                Self::Internal {
-                    reason: "database error".to_owned(),
-                    source: Some(Box::new(other)),
-                }
-            }
-        }
-    }
-}
-
 impl From<PluginError> for ChatEngineError {
     fn from(err: PluginError) -> Self {
         match err {
@@ -217,41 +197,6 @@ impl From<PluginError> for ChatEngineError {
             PluginError::Internal { message, source } => Self::Internal {
                 reason: message,
                 source,
-            },
-        }
-    }
-}
-
-impl From<DbError> for ChatEngineError {
-    fn from(err: DbError) -> Self {
-        match err {
-            // Route SeaORM errors through the existing classifier so
-            // `RecordNotFound` keeps its 404 mapping.
-            DbError::Sea(sea) => sea.into(),
-            other => Self::Internal {
-                // Source preserves the typed error / chain (DE1302).
-                reason: "database error".to_owned(),
-                source: Some(Box::new(other)),
-            },
-        }
-    }
-}
-
-impl From<ScopeError> for ChatEngineError {
-    fn from(err: ScopeError) -> Self {
-        match err {
-            ScopeError::Db(sea) => sea.into(),
-            ScopeError::Denied(msg) => Self::Forbidden {
-                reason: msg.to_owned(),
-            },
-            ScopeError::TenantNotInScope { tenant_id } => Self::Forbidden {
-                reason: format!("tenant {tenant_id} not in scope"),
-            },
-            // `Invalid` flags a programmer error in scoping config; it
-            // would surface to the operator, not the caller.
-            ScopeError::Invalid(msg) => Self::Internal {
-                reason: format!("invalid scope: {msg}"),
-                source: None,
             },
         }
     }

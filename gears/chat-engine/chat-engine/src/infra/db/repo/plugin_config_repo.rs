@@ -26,40 +26,9 @@ use toolkit_db::secure::{AccessScope, SecureDeleteExt, SecureEntityExt, SecureIn
 use uuid::Uuid;
 
 use crate::domain::error::ChatEngineError;
+use crate::domain::ports::PluginConfigRepo;
 use crate::infra::db::entity::plugin_config::{ActiveModel, Column, Entity as PluginConfigEntity};
 use crate::infra::db::repo::ChatEngineDb;
-
-/// Repository surface for `plugin_configs`.
-///
-/// The trait is object-safe — services hold `Arc<dyn PluginConfigRepo>` so the
-/// concrete backend (Sea-ORM today, an in-memory mock in tests) is swappable.
-#[async_trait]
-pub trait PluginConfigRepo: Send + Sync {
-    /// Look up the JSONB config for a `(plugin_instance_id, session_type_id)`
-    /// pair. Returns `Ok(None)` when the row is absent.
-    async fn find(
-        &self,
-        plugin_instance_id: &str,
-        session_type_id: Uuid,
-    ) -> Result<Option<JsonValue>, ChatEngineError>;
-
-    /// Insert or update the JSONB config for a pair. The `updated_at` column
-    /// MUST be refreshed on both insert and update.
-    async fn upsert(
-        &self,
-        plugin_instance_id: &str,
-        session_type_id: Uuid,
-        config: JsonValue,
-    ) -> Result<(), ChatEngineError>;
-
-    /// Remove the row keyed by `(plugin_instance_id, session_type_id)`. A
-    /// missing row is NOT an error — this method is idempotent.
-    async fn delete(
-        &self,
-        plugin_instance_id: &str,
-        session_type_id: Uuid,
-    ) -> Result<(), ChatEngineError>;
-}
 
 /// Sea-ORM-backed implementation of [`PluginConfigRepo`].
 ///

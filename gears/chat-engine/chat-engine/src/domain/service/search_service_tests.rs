@@ -1,19 +1,22 @@
 use super::*;
-use crate::infra::db::entity::session as session_entity;
-use crate::infra::db::repo::session_repo::SessionRepo;
+use crate::domain::ports::NewSession;
+use crate::domain::ports::SessionRepo;
+use crate::domain::session::LifecycleState;
+use crate::domain::session::Session;
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 // ---------- Mock SessionRepo ----------
 
 #[derive(Default)]
 struct MockSessionRepo {
-    sessions: Vec<session_entity::Model>,
+    sessions: Vec<Session>,
 }
 
 impl MockSessionRepo {
-    fn with(model: session_entity::Model) -> Self {
+    fn with(model: Session) -> Self {
         Self {
             sessions: vec![model],
         }
@@ -22,10 +25,7 @@ impl MockSessionRepo {
 
 #[async_trait]
 impl SessionRepo for MockSessionRepo {
-    async fn insert(
-        &self,
-        _model: session_entity::ActiveModel,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    async fn insert(&self, _model: NewSession) -> std::result::Result<Session, ChatEngineError> {
         unimplemented!()
     }
     async fn find_by_id(
@@ -33,12 +33,14 @@ impl SessionRepo for MockSessionRepo {
         tenant_id: &str,
         user_id: &str,
         session_id: Uuid,
-    ) -> std::result::Result<Option<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<Session>, ChatEngineError> {
         Ok(self
             .sessions
             .iter()
             .find(|s| {
-                s.session_id == session_id && s.tenant_id == tenant_id && s.user_id == user_id
+                s.session_id == session_id
+                    && s.tenant_id.as_str() == tenant_id
+                    && s.user_id.as_str() == user_id
             })
             .cloned())
     }
@@ -47,7 +49,7 @@ impl SessionRepo for MockSessionRepo {
         _tenant_id: &str,
         _user_id: &str,
         _query: &toolkit_odata::ODataQuery,
-    ) -> std::result::Result<toolkit_odata::Page<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<toolkit_odata::Page<Session>, ChatEngineError> {
         unimplemented!()
     }
     async fn update_metadata(
@@ -56,7 +58,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _metadata: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         unimplemented!()
     }
     async fn update_capabilities(
@@ -65,7 +67,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _enabled_capabilities: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         unimplemented!()
     }
     async fn update_lifecycle_state(
@@ -74,7 +76,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _state: crate::domain::session::LifecycleState,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         unimplemented!()
     }
     async fn soft_delete(
@@ -83,7 +85,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _retention_days: i64,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         unimplemented!()
     }
     async fn hard_delete(
@@ -113,16 +115,15 @@ impl MockMessageRepo {
 impl MessageRepo for MockMessageRepo {
     async fn insert_user_and_assistant_stub(
         &self,
-        _req: crate::infra::db::repo::message_repo::NewUserMessage,
-    ) -> std::result::Result<crate::infra::db::repo::message_repo::InsertedPair, ChatEngineError>
-    {
+        _req: crate::domain::ports::NewUserMessage,
+    ) -> std::result::Result<crate::domain::ports::InsertedPair, ChatEngineError> {
         unimplemented!()
     }
     async fn finalize_assistant(
         &self,
         _session_id: Uuid,
         _assistant_message_id: Uuid,
-        _outcome: crate::infra::db::repo::message_repo::FinalizeOutcome,
+        _outcome: crate::domain::ports::FinalizeOutcome,
     ) -> std::result::Result<(), ChatEngineError> {
         unimplemented!()
     }
@@ -166,11 +167,11 @@ impl MessageRepo for MockMessageRepo {
 
 // ---------- Fixtures ----------
 
-fn fixture_session(tenant: &str, user: &str, id: Uuid) -> session_entity::Model {
-    session_entity::Model {
+fn fixture_session(tenant: &str, user: &str, id: Uuid) -> Session {
+    Session {
         session_id: id,
-        tenant_id: tenant.to_string(),
-        user_id: user.to_string(),
+        tenant_id: tenant.into(),
+        user_id: user.into(),
         client_id: None,
         session_type_id: None,
         enabled_capabilities: None,
@@ -178,10 +179,8 @@ fn fixture_session(tenant: &str, user: &str, id: Uuid) -> session_entity::Model 
             "title": "Test Session",
             "tags": ["alpha", "beta"]
         })),
-        lifecycle_state: "active".to_string(),
+        lifecycle_state: LifecycleState::Active,
         share_token: None,
-        deleted_at: None,
-        scheduled_hard_delete_at: None,
         created_at: OffsetDateTime::UNIX_EPOCH,
         updated_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -218,7 +217,7 @@ fn identity() -> Identity {
     Identity::new("tenant-a", "user-1", None).unwrap()
 }
 
-fn make_service(session: session_entity::Model, messages: Vec<Message>) -> SearchService {
+fn make_service(session: Session, messages: Vec<Message>) -> SearchService {
     let sessions = Arc::new(MockSessionRepo::with(session.clone()));
     let message_repo = Arc::new(MockMessageRepo::with(messages.clone()));
 
@@ -226,8 +225,8 @@ fn make_service(session: session_entity::Model, messages: Vec<Message>) -> Searc
     for m in messages {
         backend.push(
             SearchScopeFilter::new(
-                session.tenant_id.clone(),
-                session.user_id.clone(),
+                session.tenant_id.as_str().to_owned(),
+                session.user_id.as_str().to_owned(),
                 Some(session.session_id),
             ),
             m,

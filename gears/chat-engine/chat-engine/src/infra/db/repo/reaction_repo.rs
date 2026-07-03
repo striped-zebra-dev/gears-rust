@@ -35,80 +35,12 @@ use toolkit_db::secure::{
 use uuid::Uuid;
 
 use crate::domain::error::ChatEngineError;
+use crate::domain::ports::{ReactionDeleteOutcome, ReactionRepo, ReactionUpsertOutcome};
 use crate::domain::reaction::{MessageReaction, ReactionType};
 use crate::infra::db::entity::message_reaction::{
     self as reaction_entity, Column as ReactionColumn, Entity as ReactionEntity,
 };
 use crate::infra::db::repo::ChatEngineDb;
-
-/// Outcome of [`ReactionRepo::upsert`]. Carries the persisted row plus the
-/// `previous_reaction_type` captured before the write so the service can
-/// populate the plugin event without an extra round-trip.
-#[derive(Debug, Clone)]
-pub struct ReactionUpsertOutcome {
-    /// Stored reaction after the upsert (always `Like` or `Dislike` —
-    /// `None` is handled by [`ReactionRepo::delete`], not this method).
-    pub reaction: MessageReaction,
-    /// Prior reaction value for this `(message_id, user_id)` pair.
-    /// `None` when the user had no reaction on this message before.
-    pub previous_reaction_type: Option<ReactionType>,
-}
-
-/// Outcome of [`ReactionRepo::delete`]. The service uses `applied` to
-/// determine the HTTP response shape (200 with `applied: false` when no
-/// row was present, 200 with `applied: true` when a row was removed) and
-/// `previous_reaction_type` to populate the plugin event.
-#[derive(Debug, Clone)]
-pub struct ReactionDeleteOutcome {
-    /// True when a row was removed (i.e. the user had a prior reaction).
-    /// False when no row existed (idempotent no-op).
-    pub applied: bool,
-    /// Prior reaction value when `applied = true`; `None` otherwise.
-    pub previous_reaction_type: Option<ReactionType>,
-}
-
-/// Repository surface for the `message_reactions` table.
-#[async_trait]
-pub trait ReactionRepo: Send + Sync {
-    /// Fetch the stored reaction for `(message_id, user_id)`. Returns
-    /// `Ok(None)` when no row exists (the user has not reacted).
-    async fn get_by_pk(
-        &self,
-        message_id: Uuid,
-        user_id: &str,
-    ) -> Result<Option<MessageReaction>, ChatEngineError>;
-
-    /// UPSERT the user's reaction on the message. The caller MUST have
-    /// already validated `reaction_type` is `Like` or `Dislike` —
-    /// `ReactionType::None` is a DELETE marker handled by
-    /// [`Self::delete`].
-    ///
-    /// Pre-update value is captured atomically with the write so the
-    /// service can populate `MessageReactionEvent.previous_reaction_type`
-    /// without a second round-trip.
-    async fn upsert(
-        &self,
-        message_id: Uuid,
-        user_id: &str,
-        reaction_type: ReactionType,
-    ) -> Result<ReactionUpsertOutcome, ChatEngineError>;
-
-    /// Remove the user's reaction (idempotent). Returns `applied = false`
-    /// when no row existed.
-    async fn delete(
-        &self,
-        message_id: Uuid,
-        user_id: &str,
-    ) -> Result<ReactionDeleteOutcome, ChatEngineError>;
-
-    /// Enumerate every reaction on the given message. Ordering is left
-    /// unspecified — callers that need deterministic order should sort
-    /// client-side.
-    async fn list_by_message(
-        &self,
-        message_id: Uuid,
-    ) -> Result<Vec<MessageReaction>, ChatEngineError>;
-}
 
 /// Sea-ORM-backed implementation of [`ReactionRepo`].
 ///

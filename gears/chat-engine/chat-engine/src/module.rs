@@ -82,7 +82,7 @@ struct RuntimeState {
     /// Resume buffer (FR-024) shared between the streaming driver (writer) and
     /// the `Last-Event-ID` reconnect handler (reader); also swept by the TTL
     /// cleanup loop.
-    stream_buffer: Arc<dyn crate::infra::db::repo::stream_event_repo::StreamEventBuffer>,
+    stream_buffer: Arc<dyn crate::domain::ports::StreamEventBuffer>,
     config: Arc<ChatEngineConfig>,
     /// Leader elector gating the retention-cleanup loop so only one replica
     /// sweeps at a time under horizontal scaling
@@ -249,9 +249,7 @@ async fn run_retention_cleanup_tick(intelligence: &IntelligenceService) -> anyho
 /// `expires_at`. Best-effort — a failed sweep is logged and the loop continues;
 /// expired rows are simply collected on the next tick. The buffer is short-TTL
 /// reconnect scratch, never durable history, so a missed sweep is harmless.
-async fn run_stream_buffer_sweep_tick(
-    buffer: &dyn crate::infra::db::repo::stream_event_repo::StreamEventBuffer,
-) {
+async fn run_stream_buffer_sweep_tick(buffer: &dyn crate::domain::ports::StreamEventBuffer) {
     match buffer.delete_expired(time::OffsetDateTime::now_utc()).await {
         Ok(removed) if removed > 0 => {
             info!(
@@ -328,17 +326,15 @@ impl Gear for ChatEngineModule {
         let db: Arc<ChatEngineDb> = Arc::new(DBProvider::new(db_raw.db()));
 
         // --- Repositories ---------------------------------------------------
-        let sessions_repo: Arc<dyn crate::infra::db::repo::session_repo::SessionRepo> =
+        let sessions_repo: Arc<dyn crate::domain::ports::SessionRepo> =
             Arc::new(SeaSessionRepo::new(Arc::clone(&db)));
-        let session_types_repo: Arc<
-            dyn crate::infra::db::repo::session_type_repo::SessionTypeRepo,
-        > = Arc::new(SeaSessionTypeRepo::new(Arc::clone(&db)));
-        let messages_repo: Arc<dyn crate::infra::db::repo::message_repo::MessageRepo> =
+        let session_types_repo: Arc<dyn crate::domain::ports::SessionTypeRepo> =
+            Arc::new(SeaSessionTypeRepo::new(Arc::clone(&db)));
+        let messages_repo: Arc<dyn crate::domain::ports::MessageRepo> =
             Arc::new(SeaMessageRepo::new(Arc::clone(&db)));
-        let plugin_config_repo: Arc<
-            dyn crate::infra::db::repo::plugin_config_repo::PluginConfigRepo,
-        > = Arc::new(SeaPluginConfigRepo::new(Arc::clone(&db)));
-        let reactions_repo: Arc<dyn crate::infra::db::repo::reaction_repo::ReactionRepo> =
+        let plugin_config_repo: Arc<dyn crate::domain::ports::PluginConfigRepo> =
+            Arc::new(SeaPluginConfigRepo::new(Arc::clone(&db)));
+        let reactions_repo: Arc<dyn crate::domain::ports::ReactionRepo> =
             Arc::new(SeaReactionRepo::new(Arc::clone(&db)));
         let variants_repo: Arc<dyn crate::domain::service::VariantRepo> = Arc::new(
             crate::infra::db::repo::variant_repo::SeaVariantRepo::new(Arc::clone(&db)),
@@ -390,12 +386,9 @@ impl Gear for ChatEngineModule {
 
         // Resume buffer (FR-024): the driver tees wire events here so dropped
         // connections can resume via `Last-Event-ID`.
-        let stream_buffer: Arc<dyn crate::infra::db::repo::stream_event_repo::StreamEventBuffer> =
-            Arc::new(
-                crate::infra::db::repo::stream_event_repo::SeaStreamEventBuffer::new(Arc::clone(
-                    &db,
-                )),
-            );
+        let stream_buffer: Arc<dyn crate::domain::ports::StreamEventBuffer> = Arc::new(
+            crate::infra::db::repo::stream_event_repo::SeaStreamEventBuffer::new(Arc::clone(&db)),
+        );
 
         let messages = Arc::new(
             MessageService::new(

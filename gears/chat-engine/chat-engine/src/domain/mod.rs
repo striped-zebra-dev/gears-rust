@@ -20,6 +20,7 @@ pub mod export;
 pub mod llm_config;
 pub mod memory_strategy;
 pub mod message;
+pub mod ports;
 pub mod reaction;
 pub mod retention;
 pub mod search;

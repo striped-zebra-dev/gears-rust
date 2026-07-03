@@ -48,13 +48,13 @@ use uuid::Uuid;
 
 use crate::domain::error::{ChatEngineError, Result};
 use crate::domain::message::{Message, MessagePart, MessageRole, message_text};
+use crate::domain::ports::MessageRepo;
+use crate::domain::ports::SessionRepo;
 use crate::domain::search::{
     Cursor, MAX_QUERY_LENGTH, MessageRef, SearchError, SearchPage, SearchQuery, SearchResult,
     SessionMeta, make_snippet, sanitize_for_tsquery,
 };
 use crate::domain::service::session_service::Identity;
-use crate::infra::db::repo::message_repo::MessageRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
 
 /// Scope label used by the `search_duration_seconds` metric / structured log.
 #[domain_model]

@@ -32,11 +32,11 @@ use crate::api::rest::dto::{
     VariantListDto,
 };
 use crate::api::rest::handlers;
+use crate::domain::ports::StreamEventBuffer;
 use crate::domain::service::{
     ExportService, IntelligenceService, MessageService, ReactionService, SearchService,
     SessionService, VariantService,
 };
-use crate::infra::db::repo::stream_event_repo::StreamEventBuffer;
 
 /// API tag used by every Chat Engine endpoint in the generated OpenAPI
 /// document.

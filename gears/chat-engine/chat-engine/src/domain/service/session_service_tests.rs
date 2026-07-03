@@ -89,8 +89,14 @@ fn identity_rejects_empty_user() {
 
 #[test]
 fn parse_state_falls_back_to_active() {
-    assert_eq!(parse_state("garbage"), LifecycleState::Active);
-    assert_eq!(parse_state("soft_deleted"), LifecycleState::SoftDeleted);
+    assert_eq!(
+        LifecycleState::from_str_value("garbage").unwrap_or(LifecycleState::Active),
+        LifecycleState::Active
+    );
+    assert_eq!(
+        LifecycleState::from_str_value("soft_deleted"),
+        Some(LifecycleState::SoftDeleted)
+    );
 }
 
 // Anchor for the acceptance criterion that requires `ensure_can_transition`

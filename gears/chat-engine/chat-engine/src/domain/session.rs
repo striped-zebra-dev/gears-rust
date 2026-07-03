@@ -17,7 +17,6 @@
 
 pub use chat_engine_sdk::models::{LifecycleState, Session, SessionType};
 
-use sea_orm::ActiveValue::{NotSet, Set};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -25,7 +24,6 @@ use time::format_description::well_known::Rfc3339;
 use crate::domain::error::{ChatEngineError, Result};
 use crate::domain::memory_strategy::MemoryStrategy;
 use crate::domain::retention::RetentionPolicy;
-use crate::infra::db::entity::session as session_entity;
 
 /// Reserved `Session.metadata` key holding the per-session memory strategy.
 /// Clients MUST NOT write this key directly; use the helpers in this module.
@@ -43,50 +41,6 @@ pub const RESERVED_METADATA_KEYS: &[&str] = &[
     METADATA_KEY_RETENTION_POLICY,
     METADATA_KEY_SHARE_EXPIRES_AT,
 ];
-
-impl From<session_entity::Model> for Session {
-    fn from(model: session_entity::Model) -> Self {
-        let lifecycle_state = LifecycleState::from_str_value(&model.lifecycle_state)
-            .unwrap_or(LifecycleState::Active);
-        Session {
-            session_id: model.session_id,
-            tenant_id: model.tenant_id.into(),
-            user_id: model.user_id.into(),
-            client_id: model.client_id,
-            session_type_id: model.session_type_id,
-            enabled_capabilities: model.enabled_capabilities,
-            metadata: model.metadata,
-            lifecycle_state,
-            share_token: model.share_token,
-            created_at: model.created_at,
-            updated_at: model.updated_at,
-        }
-    }
-}
-
-impl From<Session> for session_entity::ActiveModel {
-    fn from(s: Session) -> Self {
-        session_entity::ActiveModel {
-            session_id: Set(s.session_id),
-            tenant_id: Set(s.tenant_id.into_inner()),
-            user_id: Set(s.user_id.into_inner()),
-            client_id: Set(s.client_id),
-            session_type_id: Set(s.session_type_id),
-            enabled_capabilities: Set(s.enabled_capabilities),
-            metadata: Set(s.metadata),
-            lifecycle_state: Set(s.lifecycle_state.as_str().to_string()),
-            share_token: Set(s.share_token),
-            // `deleted_at` / `scheduled_hard_delete_at` are owned by the
-            // soft-delete service (Phase 12) — leave untouched here so an
-            // accidental `From` round-trip from a non-deleted session does
-            // not wipe out the columns.
-            deleted_at: NotSet,
-            scheduled_hard_delete_at: NotSet,
-            created_at: Set(s.created_at),
-            updated_at: Set(s.updated_at),
-        }
-    }
-}
 
 /// Reads `session.metadata["memory_strategy"]` and decodes it into a
 /// [`MemoryStrategy`]. Returns `None` when the key is absent or the JSON

@@ -24,10 +24,11 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chat_engine::domain::ports::StreamEventBuffer;
 use chat_engine::domain::service::message_service::{MessageService, SendMessageRequest};
 use chat_engine::domain::service::plugin_service::PluginService;
 use chat_engine::domain::service::session_service::Identity;
-use chat_engine::infra::db::repo::stream_event_repo::{SeaStreamEventBuffer, StreamEventBuffer};
+use chat_engine::infra::db::repo::stream_event_repo::SeaStreamEventBuffer;
 use chat_engine_sdk::models::{FileCitation, MessagePartInput, MessagePartType};
 use chat_engine_sdk::{
     ChatEngineBackendPlugin, PluginError, StreamingChunkEvent, StreamingCompleteEvent,

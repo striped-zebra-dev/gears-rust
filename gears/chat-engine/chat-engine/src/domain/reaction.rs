@@ -23,8 +23,6 @@ use time::OffsetDateTime;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
-use crate::infra::db::entity::message_reaction as reaction_entity;
-
 /// Wire-level reaction kind. Stored in `message_reactions.reaction_type` as
 /// a lowercase string ("like" / "dislike"); a `None` value is never persisted
 /// — it deletes the row.
@@ -72,7 +70,7 @@ impl ReactionType {
 }
 
 /// Stored reaction row as exposed by [`ReactionRepo`](
-/// crate::infra::db::repo::reaction_repo::ReactionRepo) and the
+/// crate::domain::ports::ReactionRepo) and the
 /// [`ReactionService`](crate::domain::service::reaction_service::ReactionService).
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,23 +82,6 @@ pub struct MessageReaction {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
-}
-
-impl From<reaction_entity::Model> for MessageReaction {
-    fn from(m: reaction_entity::Model) -> Self {
-        // Unknown values fall back to `None`. The migration in Phase 1 has
-        // no CHECK constraint, so guarding here keeps the bridge panic-free
-        // even if a future write smuggles in a junk value.
-        let reaction_type =
-            ReactionType::from_str_value(&m.reaction_type).unwrap_or(ReactionType::None);
-        Self {
-            message_id: m.message_id,
-            user_id: m.user_id,
-            reaction_type,
-            created_at: m.created_at,
-            updated_at: m.updated_at,
-        }
-    }
 }
 
 /// Fire-and-forget plugin event payload built by the reaction service after

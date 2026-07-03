@@ -22,7 +22,7 @@ use serde_json::Value as JsonValue;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::infra::db::repo::stream_event_repo::StreamEventBuffer;
+use crate::domain::ports::StreamEventBuffer;
 
 /// How often the reader polls the buffer for newly-appended events.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);

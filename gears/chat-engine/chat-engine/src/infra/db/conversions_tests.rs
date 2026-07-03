@@ -113,3 +113,17 @@ fn empty_file_ids_round_trip_as_none() {
         other => panic!("expected Set(None), got {other:?}"),
     }
 }
+
+#[test]
+fn reaction_model_to_domain_unknown_value_collapses_to_none() {
+    let now = OffsetDateTime::now_utc();
+    let model = reaction_entity::Model {
+        message_id: Uuid::nil(),
+        user_id: "u".into(),
+        reaction_type: "purple_heart".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    let domain: MessageReaction = model.into();
+    assert_eq!(domain.reaction_type, ReactionType::None);
+}

@@ -1,4 +1,9 @@
 use super::*;
+use crate::domain::ports::NewSession;
+use crate::domain::ports::NewSessionType;
+use crate::domain::session::Session;
+use crate::domain::session::SessionType;
+use uuid::Uuid;
 
 use async_trait::async_trait;
 use chat_engine_sdk::models::{LifecycleState, MessagePart, MessageRole};
@@ -8,22 +13,19 @@ use time::OffsetDateTime;
 use toolkit::ClientHub;
 
 use crate::domain::message::Message;
-use crate::infra::db::entity::{session as session_entity, session_type as session_type_entity};
-use crate::infra::db::repo::message_repo::{
-    FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage,
-};
-use crate::infra::db::repo::plugin_config_repo::PluginConfigRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
+use crate::domain::ports::PluginConfigRepo;
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::SessionTypeRepo;
+use crate::domain::ports::{FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage};
 
 // ----- Mocks -------------------------------------------------------
 
 struct MockSessionRepo {
-    rows: Mutex<Vec<session_entity::Model>>,
+    rows: Mutex<Vec<Session>>,
 }
 
 impl MockSessionRepo {
-    fn new(rows: Vec<session_entity::Model>) -> Arc<Self> {
+    fn new(rows: Vec<Session>) -> Arc<Self> {
         Arc::new(Self {
             rows: Mutex::new(rows),
         })
@@ -32,10 +34,7 @@ impl MockSessionRepo {
 
 #[async_trait]
 impl SessionRepo for MockSessionRepo {
-    async fn insert(
-        &self,
-        _m: session_entity::ActiveModel,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    async fn insert(&self, _m: NewSession) -> std::result::Result<Session, ChatEngineError> {
         Err(ChatEngineError::internal("mock insert"))
     }
 
@@ -44,13 +43,15 @@ impl SessionRepo for MockSessionRepo {
         tenant_id: &str,
         user_id: &str,
         session_id: Uuid,
-    ) -> std::result::Result<Option<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<Session>, ChatEngineError> {
         Ok(self
             .rows
             .lock()
             .iter()
             .find(|r| {
-                r.session_id == session_id && r.tenant_id == tenant_id && r.user_id == user_id
+                r.session_id == session_id
+                    && r.tenant_id.as_str() == tenant_id
+                    && r.user_id.as_str() == user_id
             })
             .cloned())
     }
@@ -60,7 +61,7 @@ impl SessionRepo for MockSessionRepo {
         _tenant_id: &str,
         _user_id: &str,
         _query: &toolkit_odata::ODataQuery,
-    ) -> std::result::Result<toolkit_odata::Page<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<toolkit_odata::Page<Session>, ChatEngineError> {
         Ok(toolkit_odata::Page::empty(0))
     }
 
@@ -70,7 +71,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         session_id: Uuid,
         metadata: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         let mut rows = self.rows.lock();
         for row in rows.iter_mut() {
             if row.session_id == session_id {
@@ -87,7 +88,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _id: Uuid,
         _c: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Err(ChatEngineError::internal("mock update_capabilities"))
     }
 
@@ -97,7 +98,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _id: Uuid,
         _s: LifecycleState,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Err(ChatEngineError::internal("mock update_lifecycle_state"))
     }
 
@@ -107,7 +108,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _id: Uuid,
         _d: i64,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Err(ChatEngineError::internal("mock soft_delete"))
     }
 
@@ -125,14 +126,14 @@ impl SessionRepo for MockSessionRepo {
         tenant_id: &str,
         after: Option<Uuid>,
         limit: u32,
-    ) -> std::result::Result<Vec<session_entity::Model>, ChatEngineError> {
-        let mut rows: Vec<session_entity::Model> = self
+    ) -> std::result::Result<Vec<Session>, ChatEngineError> {
+        let mut rows: Vec<Session> = self
             .rows
             .lock()
             .iter()
             .filter(|r| {
-                r.tenant_id == tenant_id
-                    && r.lifecycle_state == LifecycleState::Active.as_str()
+                r.tenant_id.as_str() == tenant_id
+                    && r.lifecycle_state == LifecycleState::Active
                     && after.is_none_or(|a| r.session_id > a)
             })
             .cloned()
@@ -149,8 +150,8 @@ impl SessionRepo for MockSessionRepo {
             .rows
             .lock()
             .iter()
-            .filter(|r| r.lifecycle_state == LifecycleState::Active.as_str())
-            .map(|r| r.tenant_id.clone())
+            .filter(|r| r.lifecycle_state == LifecycleState::Active)
+            .map(|r| r.tenant_id.as_str().to_owned())
             .collect();
         tenants.sort();
         tenants.dedup();
@@ -163,17 +164,17 @@ struct MockSessionTypeRepo;
 impl SessionTypeRepo for MockSessionTypeRepo {
     async fn insert(
         &self,
-        _m: session_type_entity::ActiveModel,
-    ) -> std::result::Result<session_type_entity::Model, ChatEngineError> {
+        _m: NewSessionType,
+    ) -> std::result::Result<SessionType, ChatEngineError> {
         Err(ChatEngineError::internal("mock"))
     }
     async fn find_by_id(
         &self,
         _id: Uuid,
-    ) -> std::result::Result<Option<session_type_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<SessionType>, ChatEngineError> {
         Ok(None)
     }
-    async fn list(&self) -> std::result::Result<Vec<session_type_entity::Model>, ChatEngineError> {
+    async fn list(&self) -> std::result::Result<Vec<SessionType>, ChatEngineError> {
         Ok(vec![])
     }
 }
@@ -372,9 +373,9 @@ impl PluginConfigRepo for StubPluginConfigRepo {
 
 // ----- Helpers -----------------------------------------------------
 
-fn make_session(session_id: Uuid, metadata: Option<JsonValue>) -> session_entity::Model {
+fn make_session(session_id: Uuid, metadata: Option<JsonValue>) -> Session {
     let now = OffsetDateTime::now_utc();
-    session_entity::Model {
+    Session {
         session_id,
         tenant_id: "t".into(),
         user_id: "u".into(),
@@ -382,10 +383,8 @@ fn make_session(session_id: Uuid, metadata: Option<JsonValue>) -> session_entity
         session_type_id: None,
         enabled_capabilities: None,
         metadata,
-        lifecycle_state: LifecycleState::Active.as_str().to_string(),
+        lifecycle_state: LifecycleState::Active,
         share_token: None,
-        deleted_at: None,
-        scheduled_hard_delete_at: None,
         created_at: now,
         updated_at: now,
     }
@@ -714,7 +713,7 @@ async fn update_rejects_invalid_max_age_days() {
 async fn update_rejects_soft_deleted_session() {
     let session_id = Uuid::new_v4();
     let mut row = make_session(session_id, None);
-    row.lifecycle_state = LifecycleState::SoftDeleted.as_str().to_string();
+    row.lifecycle_state = LifecycleState::SoftDeleted;
     let sessions = MockSessionRepo::new(vec![row]);
     let msgs = MockMessageRepo::new(vec![]);
     let svc = make_service(sessions, msgs);
@@ -786,7 +785,7 @@ fn make_service_with_plugin(
     plugin_id: &str,
     plugin: Arc<dyn ChatEngineBackendPlugin>,
     session_type_id: Uuid,
-    session_row: session_entity::Model,
+    session_row: Session,
 ) -> (
     IntelligenceService,
     Arc<MockSessionRepo>,
@@ -800,20 +799,20 @@ fn make_service_with_plugin(
 
     // session_types mock: return a row with the configured plugin id.
     struct OneTypeRepo {
-        model: Mutex<session_type_entity::Model>,
+        model: Mutex<SessionType>,
     }
     #[async_trait]
     impl SessionTypeRepo for OneTypeRepo {
         async fn insert(
             &self,
-            _m: session_type_entity::ActiveModel,
-        ) -> std::result::Result<session_type_entity::Model, ChatEngineError> {
+            _m: NewSessionType,
+        ) -> std::result::Result<SessionType, ChatEngineError> {
             Err(ChatEngineError::internal("mock"))
         }
         async fn find_by_id(
             &self,
             id: Uuid,
-        ) -> std::result::Result<Option<session_type_entity::Model>, ChatEngineError> {
+        ) -> std::result::Result<Option<SessionType>, ChatEngineError> {
             let m = self.model.lock().clone();
             if m.session_type_id == id {
                 Ok(Some(m))
@@ -821,15 +820,13 @@ fn make_service_with_plugin(
                 Ok(None)
             }
         }
-        async fn list(
-            &self,
-        ) -> std::result::Result<Vec<session_type_entity::Model>, ChatEngineError> {
+        async fn list(&self) -> std::result::Result<Vec<SessionType>, ChatEngineError> {
             Ok(vec![self.model.lock().clone()])
         }
     }
     let now = OffsetDateTime::now_utc();
     let st_repo: Arc<dyn SessionTypeRepo> = Arc::new(OneTypeRepo {
-        model: Mutex::new(session_type_entity::Model {
+        model: Mutex::new(SessionType {
             session_type_id,
             name: "t".into(),
             plugin_instance_id: Some(plugin_id.into()),
@@ -900,16 +897,16 @@ async fn summarize_returns_422_style_when_plugin_unregistered() {
     impl SessionTypeRepo for ReturnsType {
         async fn insert(
             &self,
-            _m: session_type_entity::ActiveModel,
-        ) -> std::result::Result<session_type_entity::Model, ChatEngineError> {
+            _m: NewSessionType,
+        ) -> std::result::Result<SessionType, ChatEngineError> {
             Err(ChatEngineError::internal("mock"))
         }
         async fn find_by_id(
             &self,
             id: Uuid,
-        ) -> std::result::Result<Option<session_type_entity::Model>, ChatEngineError> {
+        ) -> std::result::Result<Option<SessionType>, ChatEngineError> {
             if id == self.id {
-                Ok(Some(session_type_entity::Model {
+                Ok(Some(SessionType {
                     session_type_id: self.id,
                     name: "t".into(),
                     plugin_instance_id: Some(self.pid.clone()),
@@ -920,9 +917,7 @@ async fn summarize_returns_422_style_when_plugin_unregistered() {
                 Ok(None)
             }
         }
-        async fn list(
-            &self,
-        ) -> std::result::Result<Vec<session_type_entity::Model>, ChatEngineError> {
+        async fn list(&self) -> std::result::Result<Vec<SessionType>, ChatEngineError> {
             Ok(vec![])
         }
     }
@@ -1273,7 +1268,7 @@ async fn run_cleanup_all_tenants_visits_every_distinct_active_tenant() {
     b.tenant_id = "tenant_b".into();
     let mut c = make_session(Uuid::new_v4(), None);
     c.tenant_id = "tenant_c".into();
-    c.lifecycle_state = LifecycleState::Archived.as_str().to_string();
+    c.lifecycle_state = LifecycleState::Archived;
 
     let sessions = MockSessionRepo::new(vec![a, b, c]);
     let msgs = MockMessageRepo::new(vec![]);

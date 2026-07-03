@@ -7,40 +7,38 @@
 //!
 //! Phase 4 owns only `insert`, `find_by_id`, and `list`. Update / delete
 //! flows belong to the developer-admin surface that Phase 14 will assemble.
+//!
+//! The [`SessionTypeRepo`] port is defined in `domain::ports` and returns the
+//! domain [`SessionType`] — the entity → domain conversion lives here in the
+//! adapter (DE0301).
 //
 // @cpt-cf-chat-engine-session-type-repo:p4
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use sea_orm::{EntityTrait, QueryOrder};
+use sea_orm::{ActiveValue::Set, EntityTrait, QueryOrder};
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use uuid::Uuid;
 
+use chat_engine_sdk::models::SessionType;
+
 use crate::domain::error::ChatEngineError;
+use crate::domain::ports::{NewSessionType, SessionTypeRepo};
 use crate::infra::db::entity::session_type::{
     self as session_type_entity, Entity as SessionTypeEntity,
 };
 use crate::infra::db::repo::ChatEngineDb;
 
-/// Repository surface for the `session_types` table.
-#[async_trait]
-pub trait SessionTypeRepo: Send + Sync {
-    /// Persist a new session type.
-    async fn insert(
-        &self,
-        model: session_type_entity::ActiveModel,
-    ) -> Result<session_type_entity::Model, ChatEngineError>;
-
-    /// Lookup by surrogate primary key.
-    async fn find_by_id(
-        &self,
-        session_type_id: Uuid,
-    ) -> Result<Option<session_type_entity::Model>, ChatEngineError>;
-
-    /// List all session types ordered by `created_at DESC`. Phase 4 does not
-    /// paginate this surface — session types are operator-managed and small.
-    async fn list(&self) -> Result<Vec<session_type_entity::Model>, ChatEngineError>;
+/// Project a persisted `session_types` row into the domain [`SessionType`].
+fn to_domain(model: session_type_entity::Model) -> SessionType {
+    SessionType {
+        session_type_id: model.session_type_id,
+        name: model.name,
+        plugin_instance_id: model.plugin_instance_id,
+        created_at: model.created_at,
+        updated_at: model.updated_at,
+    }
 }
 
 /// Sea-ORM-backed implementation of [`SessionTypeRepo`].
@@ -64,10 +62,14 @@ impl SeaSessionTypeRepo {
 
 #[async_trait]
 impl SessionTypeRepo for SeaSessionTypeRepo {
-    async fn insert(
-        &self,
-        model: session_type_entity::ActiveModel,
-    ) -> Result<session_type_entity::Model, ChatEngineError> {
+    async fn insert(&self, new: NewSessionType) -> Result<SessionType, ChatEngineError> {
+        let model = session_type_entity::ActiveModel {
+            session_type_id: Set(new.session_type_id),
+            name: Set(new.name),
+            plugin_instance_id: Set(new.plugin_instance_id),
+            created_at: Set(new.created_at),
+            updated_at: Set(new.updated_at),
+        };
         let conn = self.db.conn()?;
         let scope = AccessScope::allow_all();
         let inserted = SessionTypeEntity::insert(model)
@@ -75,13 +77,13 @@ impl SessionTypeRepo for SeaSessionTypeRepo {
             .scope_unchecked(&scope)?
             .exec_with_returning(&conn)
             .await?;
-        Ok(inserted)
+        Ok(to_domain(inserted))
     }
 
     async fn find_by_id(
         &self,
         session_type_id: Uuid,
-    ) -> Result<Option<session_type_entity::Model>, ChatEngineError> {
+    ) -> Result<Option<SessionType>, ChatEngineError> {
         let conn = self.db.conn()?;
         let scope = AccessScope::allow_all();
         let row = SessionTypeEntity::find_by_id(session_type_id)
@@ -89,10 +91,10 @@ impl SessionTypeRepo for SeaSessionTypeRepo {
             .scope_with(&scope)
             .one(&conn)
             .await?;
-        Ok(row)
+        Ok(row.map(to_domain))
     }
 
-    async fn list(&self) -> Result<Vec<session_type_entity::Model>, ChatEngineError> {
+    async fn list(&self) -> Result<Vec<SessionType>, ChatEngineError> {
         let conn = self.db.conn()?;
         let scope = AccessScope::allow_all();
         let rows = SessionTypeEntity::find()
@@ -101,7 +103,7 @@ impl SessionTypeRepo for SeaSessionTypeRepo {
             .scope_with(&scope)
             .all(&conn)
             .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(to_domain).collect())
     }
 }
 

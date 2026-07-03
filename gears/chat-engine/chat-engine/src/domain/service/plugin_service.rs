@@ -44,7 +44,7 @@ use chat_engine_sdk::plugin::ChatEngineBackendPlugin;
 
 use crate::domain::HealthStatus;
 use crate::domain::error::ChatEngineError;
-use crate::infra::db::repo::plugin_config_repo::PluginConfigRepo;
+use crate::domain::ports::PluginConfigRepo;
 
 /// Resolution + health surface for `ChatEngineBackendPlugin` impls.
 ///

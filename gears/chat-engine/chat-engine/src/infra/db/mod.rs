@@ -5,7 +5,9 @@
 //! (4, 5, 9, 11, 12) — those phases consume `&impl toolkit_db::secure::DBRunner`
 //! directly per the workspace pattern in `mini-chat`.
 
+mod conversions;
 pub mod entity;
+mod error_map;
 pub mod migrations;
 pub mod odata_mapper;
 pub mod repo;

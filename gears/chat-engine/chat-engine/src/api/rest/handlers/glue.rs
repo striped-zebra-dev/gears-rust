@@ -32,13 +32,13 @@ use crate::api::rest::handlers::sessions::identity_from_ctx;
 use crate::api::rest::sse_delta_stream_response;
 use crate::api::rest::stream_reader::sse_buffer_reader_response;
 use crate::domain::error::{ChatEngineError, Result};
+use crate::domain::ports::StreamEventBuffer;
 use crate::domain::reaction::ReactionType;
 use crate::domain::search::SearchQuery;
 use crate::domain::service::message_service::SendMessageRequest;
 use crate::domain::service::{
     IntelligenceService, MessageService, ReactionService, SearchService, VariantService,
 };
-use crate::infra::db::repo::stream_event_repo::StreamEventBuffer;
 
 /// Query parameters for `GET /chat-engine/v1/sessions/{id}/messages`.
 #[derive(Debug, Deserialize)]

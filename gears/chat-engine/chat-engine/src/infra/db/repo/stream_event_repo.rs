@@ -19,47 +19,11 @@ use toolkit_db::secure::{AccessScope, SecureDeleteExt, SecureEntityExt, SecureIn
 use uuid::Uuid;
 
 use crate::domain::error::ChatEngineError;
+use crate::domain::ports::{BufferedEvent, StreamEventBuffer};
 use crate::infra::db::entity::stream_event::{
     self as stream_event_entity, Entity as StreamEventEntity,
 };
 use crate::infra::db::repo::ChatEngineDb;
-
-/// One buffered wire event, returned by [`StreamEventBuffer::read_since`].
-#[derive(Debug, Clone)]
-pub struct BufferedEvent {
-    /// Per-message sequence number (the SSE `id:`).
-    pub seq: u64,
-    /// Serialized wire event, replayed verbatim.
-    pub event: JsonValue,
-}
-
-/// Short-TTL append-only buffer that bridges SSE reconnects (`Last-Event-ID`).
-/// Not durable history — the persisted message is the durable record.
-#[async_trait]
-pub trait StreamEventBuffer: Send + Sync {
-    /// Append `event` at `(message_id, seq)` with the given TTL deadline.
-    /// Idempotent on the PK: a re-append of the same `(message_id, seq)` is a
-    /// no-op (so a retried write never errors).
-    async fn append(
-        &self,
-        message_id: Uuid,
-        seq: u64,
-        event: JsonValue,
-        expires_at: OffsetDateTime,
-    ) -> Result<(), ChatEngineError>;
-
-    /// Return buffered events for `message_id` with `seq > after_seq` (or all
-    /// when `after_seq` is `None`), ordered by `seq` ascending.
-    async fn read_since(
-        &self,
-        message_id: Uuid,
-        after_seq: Option<u64>,
-    ) -> Result<Vec<BufferedEvent>, ChatEngineError>;
-
-    /// Delete all rows whose `expires_at` is at or before `now`. Returns the
-    /// number of rows removed. Called by the periodic TTL sweep.
-    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64, ChatEngineError>;
-}
 
 /// SeaORM-backed [`StreamEventBuffer`] over the `stream_events` table.
 pub struct SeaStreamEventBuffer {

@@ -49,13 +49,12 @@ use crate::domain::export::{
     SharedSessionView, generate_share_token,
 };
 use crate::domain::message::{Message, MessagePart, MessagePartType, MessageRole};
+use crate::domain::ports::MessageRepo;
+use crate::domain::ports::SessionRepo;
 use crate::domain::service::session_service::Identity;
 use crate::domain::session::{
     LifecycleState, Session, get_share_expires_at, public_metadata, set_share_expires_at,
 };
-use crate::infra::db::entity::session as session_entity;
-use crate::infra::db::repo::message_repo::MessageRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
 
 /// Reserved metadata key holding the (optional) user-friendly title.
 /// Title is opaque to Chat Engine — we only read it to surface in the
@@ -217,7 +216,7 @@ impl ExportService {
         // Materialize the metadata payload (with `share_expires_at` set
         // when an expiry was requested) ahead of the DB write. The
         // `share_token` column is supplied separately to the repo call.
-        let mut session: Session = row.into();
+        let mut session: Session = row;
         set_share_expires_at(&mut session, expires_at);
 
         let _persisted = self
@@ -261,7 +260,7 @@ impl ExportService {
             return Ok(());
         }
 
-        let mut session: Session = row.into();
+        let mut session: Session = row;
         set_share_expires_at(&mut session, None);
 
         self.sessions
@@ -301,7 +300,7 @@ impl ExportService {
             .await?
             .ok_or_else(|| ChatEngineError::not_found("share_token", "***redacted***"))?;
 
-        let session: Session = row.into();
+        let session: Session = row;
 
         // Hard-deleted rows are excluded by find_by_share_token; treat
         // soft-deleted as expired so the response is indistinguishable
@@ -345,11 +344,7 @@ impl ExportService {
     // helpers
     // ---------------------------------------------------------------------
 
-    async fn load_owned(
-        &self,
-        identity: &Identity,
-        session_id: Uuid,
-    ) -> Result<session_entity::Model> {
+    async fn load_owned(&self, identity: &Identity, session_id: Uuid) -> Result<Session> {
         self.sessions
             .find_by_id(&identity.tenant_id, &identity.user_id, session_id)
             .await?
@@ -376,9 +371,8 @@ pub fn is_share_token_expired(err: &ChatEngineError) -> bool {
     matches!(err, ChatEngineError::Conflict { reason } if reason == "share token expired")
 }
 
-fn ensure_shareable(model: &session_entity::Model) -> Result<()> {
-    let state =
-        LifecycleState::from_str_value(&model.lifecycle_state).unwrap_or(LifecycleState::Active);
+fn ensure_shareable(session: &Session) -> Result<()> {
+    let state = session.lifecycle_state;
     if matches!(state, LifecycleState::Active | LifecycleState::Archived) {
         Ok(())
     } else {
@@ -389,15 +383,13 @@ fn ensure_shareable(model: &session_entity::Model) -> Result<()> {
     }
 }
 
-fn build_session_meta(model: &session_entity::Model) -> ExportSessionMeta {
-    // Reconstruct a Session view to reuse public_metadata + title helpers.
-    let session: Session = model.clone().into();
+fn build_session_meta(session: &Session) -> ExportSessionMeta {
     ExportSessionMeta {
         session_id: session.session_id,
         session_type_id: session.session_type_id,
         lifecycle_state: session.lifecycle_state.as_str().to_owned(),
         title: metadata_title(session.metadata.as_ref()),
-        metadata: public_metadata(&session),
+        metadata: public_metadata(session),
         created_at: session.created_at,
         updated_at: session.updated_at,
     }

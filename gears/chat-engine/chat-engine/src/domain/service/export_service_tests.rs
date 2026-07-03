@@ -3,33 +3,35 @@
 #![allow(clippy::case_sensitive_file_extension_comparisons)]
 use super::*;
 use crate::domain::message::MessageRole;
+use crate::domain::ports::NewSession;
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::{FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage};
 use crate::domain::service::session_service::Identity;
+use crate::domain::session::LifecycleState;
 use crate::domain::session::METADATA_KEY_SHARE_EXPIRES_AT;
-use crate::infra::db::repo::message_repo::{
-    FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage,
-};
-use crate::infra::db::repo::session_repo::SessionRepo;
+use crate::domain::session::Session;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::json;
 use std::sync::Arc;
+use uuid::Uuid;
 
 // --- mocks -----------------------------------------------------------
 
 #[derive(Default)]
 struct MockSessionRepo {
-    rows: Mutex<Vec<session_entity::Model>>,
+    rows: Mutex<Vec<Session>>,
 }
 
 impl MockSessionRepo {
-    fn seed(&self, row: session_entity::Model) {
+    fn seed(&self, row: Session) {
         self.rows.lock().push(row);
     }
 }
 
 #[async_trait]
 impl SessionRepo for MockSessionRepo {
-    async fn insert(&self, _model: session_entity::ActiveModel) -> Result<session_entity::Model> {
+    async fn insert(&self, _model: NewSession) -> Result<Session> {
         unimplemented!()
     }
 
@@ -38,13 +40,15 @@ impl SessionRepo for MockSessionRepo {
         tenant_id: &str,
         user_id: &str,
         session_id: Uuid,
-    ) -> Result<Option<session_entity::Model>> {
+    ) -> Result<Option<Session>> {
         Ok(self
             .rows
             .lock()
             .iter()
             .find(|m| {
-                m.session_id == session_id && m.tenant_id == tenant_id && m.user_id == user_id
+                m.session_id == session_id
+                    && m.tenant_id.as_str() == tenant_id
+                    && m.user_id.as_str() == user_id
             })
             .cloned())
     }
@@ -54,7 +58,7 @@ impl SessionRepo for MockSessionRepo {
         _tenant_id: &str,
         _user_id: &str,
         _query: &toolkit_odata::ODataQuery,
-    ) -> Result<toolkit_odata::Page<session_entity::Model>> {
+    ) -> Result<toolkit_odata::Page<Session>> {
         Ok(toolkit_odata::Page::empty(0))
     }
 
@@ -64,7 +68,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _metadata: Option<JsonValue>,
-    ) -> Result<session_entity::Model> {
+    ) -> Result<Session> {
         unimplemented!()
     }
 
@@ -74,7 +78,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _capabilities: Option<JsonValue>,
-    ) -> Result<session_entity::Model> {
+    ) -> Result<Session> {
         unimplemented!()
     }
 
@@ -84,7 +88,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _new_state: LifecycleState,
-    ) -> Result<session_entity::Model> {
+    ) -> Result<Session> {
         unimplemented!()
     }
 
@@ -94,7 +98,7 @@ impl SessionRepo for MockSessionRepo {
         _user_id: &str,
         _session_id: Uuid,
         _retention_days: i64,
-    ) -> Result<session_entity::Model> {
+    ) -> Result<Session> {
         unimplemented!()
     }
 
@@ -107,10 +111,7 @@ impl SessionRepo for MockSessionRepo {
         Ok(false)
     }
 
-    async fn find_by_share_token(
-        &self,
-        share_token: &str,
-    ) -> Result<Option<session_entity::Model>> {
+    async fn find_by_share_token(&self, share_token: &str) -> Result<Option<Session>> {
         Ok(self
             .rows
             .lock()
@@ -126,12 +127,14 @@ impl SessionRepo for MockSessionRepo {
         session_id: Uuid,
         share_token: Option<String>,
         metadata: Option<JsonValue>,
-    ) -> Result<session_entity::Model> {
+    ) -> Result<Session> {
         let mut rows = self.rows.lock();
         let row = rows
             .iter_mut()
             .find(|m| {
-                m.session_id == session_id && m.tenant_id == tenant_id && m.user_id == user_id
+                m.session_id == session_id
+                    && m.tenant_id.as_str() == tenant_id
+                    && m.user_id.as_str() == user_id
             })
             .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
         row.share_token = share_token;
@@ -182,8 +185,8 @@ impl MessageRepo for MockMessageRepo {
     }
 }
 
-fn sample_session(tenant: &str, user: &str, session_id: Uuid) -> session_entity::Model {
-    session_entity::Model {
+fn sample_session(tenant: &str, user: &str, session_id: Uuid) -> Session {
+    Session {
         session_id,
         tenant_id: tenant.into(),
         user_id: user.into(),
@@ -191,10 +194,8 @@ fn sample_session(tenant: &str, user: &str, session_id: Uuid) -> session_entity:
         session_type_id: None,
         enabled_capabilities: None,
         metadata: Some(json!({"title": "Hello"})),
-        lifecycle_state: "active".into(),
+        lifecycle_state: LifecycleState::Active,
         share_token: None,
-        deleted_at: None,
-        scheduled_hard_delete_at: None,
         created_at: OffsetDateTime::UNIX_EPOCH,
         updated_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -303,7 +304,7 @@ async fn export_rejects_soft_deleted_session() {
     let (svc, sessions, _messages) = build_service();
     let session_id = Uuid::new_v4();
     let mut row = sample_session("tenant-a", "user-a", session_id);
-    row.lifecycle_state = "soft_deleted".into();
+    row.lifecycle_state = LifecycleState::SoftDeleted;
     sessions.seed(row);
 
     let err = svc
@@ -361,7 +362,7 @@ async fn create_share_rejects_soft_deleted_session() {
     let (svc, sessions, _messages) = build_service();
     let session_id = Uuid::new_v4();
     let mut row = sample_session("tenant-a", "user-a", session_id);
-    row.lifecycle_state = "soft_deleted".into();
+    row.lifecycle_state = LifecycleState::SoftDeleted;
     sessions.seed(row);
 
     let err = svc
@@ -429,7 +430,7 @@ async fn access_shared_returns_expired_for_soft_deleted_session() {
     let session_id = Uuid::new_v4();
     let mut row = sample_session("tenant-a", "user-a", session_id);
     row.share_token = Some("soft-tok".into());
-    row.lifecycle_state = "soft_deleted".into();
+    row.lifecycle_state = LifecycleState::SoftDeleted;
     sessions.seed(row);
 
     let err = svc.access_shared("soft-tok").await.unwrap_err();
@@ -478,7 +479,7 @@ async fn revoke_share_is_idempotent_when_already_cleared() {
 fn ensure_shareable_allows_active_and_archived() {
     let mut row = sample_session("t", "u", Uuid::nil());
     for state in ["active", "archived"] {
-        row.lifecycle_state = state.into();
+        row.lifecycle_state = LifecycleState::from_str_value(state).unwrap();
         ensure_shareable(&row).expect("active/archived OK");
     }
 }
@@ -487,7 +488,7 @@ fn ensure_shareable_allows_active_and_archived() {
 fn ensure_shareable_rejects_deleted_states() {
     let mut row = sample_session("t", "u", Uuid::nil());
     for state in ["soft_deleted", "hard_deleted"] {
-        row.lifecycle_state = state.into();
+        row.lifecycle_state = LifecycleState::from_str_value(state).unwrap();
         assert!(ensure_shareable(&row).is_err());
     }
 }
@@ -542,7 +543,7 @@ fn render_markdown_includes_role_headers() {
     let meta = ExportSessionMeta {
         session_id: Uuid::nil(),
         session_type_id: None,
-        lifecycle_state: "active".into(),
+        lifecycle_state: "active".to_string(),
         title: Some("My chat".into()),
         metadata: None,
         created_at: OffsetDateTime::UNIX_EPOCH,
@@ -567,7 +568,7 @@ fn render_json_emits_envelope() {
     let meta = ExportSessionMeta {
         session_id: Uuid::nil(),
         session_type_id: None,
-        lifecycle_state: "active".into(),
+        lifecycle_state: "active".to_string(),
         title: None,
         metadata: None,
         created_at: OffsetDateTime::UNIX_EPOCH,

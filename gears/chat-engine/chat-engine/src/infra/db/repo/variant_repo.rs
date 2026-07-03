@@ -326,7 +326,7 @@ impl VariantRepo for SeaVariantRepo {
         session_id: Uuid,
         new_session_type_id: Uuid,
         new_capabilities: JsonValue,
-    ) -> Result<crate::infra::db::entity::session::Model> {
+    ) -> Result<crate::domain::session::Session> {
         use crate::infra::db::entity::session::{self as session_entity, Entity as SessionEntity};
 
         let tenant_id = tenant_id.to_owned();
@@ -372,7 +372,7 @@ impl VariantRepo for SeaVariantRepo {
                         .one(tx)
                         .await?
                         .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
-                    Ok(updated)
+                    Ok(updated.into())
                 })
             })
             .await

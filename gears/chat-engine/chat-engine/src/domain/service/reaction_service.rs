@@ -54,14 +54,14 @@ use uuid::Uuid;
 
 use crate::domain::error::{ChatEngineError, Result};
 use crate::domain::message::MessageRole;
+use crate::domain::ports::MessageRepo;
+use crate::domain::ports::ReactionRepo;
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::SessionTypeRepo;
 use crate::domain::reaction::{MessageReaction, MessageReactionEvent, ReactionType};
 use crate::domain::service::plugin_service::PluginService;
 use crate::domain::service::session_service::Identity;
 use crate::domain::session::Session;
-use crate::infra::db::repo::message_repo::MessageRepo;
-use crate::infra::db::repo::reaction_repo::ReactionRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
 
 /// Capability name that gates writes to message reactions. Matches the
 /// `feedback` token referenced in the Phase 9 brief and the
@@ -356,7 +356,7 @@ impl ReactionService {
             .find_by_id(&identity.tenant_id, &identity.user_id, session_id)
             .await?
             .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
-        let session = Session::from(session_row);
+        let session = session_row;
 
         let message = self
             .messages

@@ -113,7 +113,7 @@ impl VariantRepo for RetryingMockRepo {
         _session_id: Uuid,
         _new_session_type_id: Uuid,
         _new_capabilities: JsonValue,
-    ) -> Result<crate::infra::db::entity::session::Model> {
+    ) -> Result<Session> {
         Err(ChatEngineError::internal("not implemented for this mock"))
     }
 }

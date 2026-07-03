@@ -6,19 +6,19 @@ struct MockRepo;
 impl SessionTypeRepo for MockRepo {
     async fn insert(
         &self,
-        _model: session_type_entity::ActiveModel,
-    ) -> Result<session_type_entity::Model, ChatEngineError> {
+        _new: crate::domain::ports::NewSessionType,
+    ) -> Result<chat_engine_sdk::models::SessionType, ChatEngineError> {
         Err(ChatEngineError::internal("mock: insert not implemented"))
     }
 
     async fn find_by_id(
         &self,
         _session_type_id: Uuid,
-    ) -> Result<Option<session_type_entity::Model>, ChatEngineError> {
+    ) -> Result<Option<chat_engine_sdk::models::SessionType>, ChatEngineError> {
         Ok(None)
     }
 
-    async fn list(&self) -> Result<Vec<session_type_entity::Model>, ChatEngineError> {
+    async fn list(&self) -> Result<Vec<chat_engine_sdk::models::SessionType>, ChatEngineError> {
         Ok(Vec::new())
     }
 }

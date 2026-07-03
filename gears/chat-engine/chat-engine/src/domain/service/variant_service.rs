@@ -61,16 +61,14 @@ use chat_engine_sdk::plugin::{PluginCallContext, SessionPluginCtx};
 
 use crate::domain::error::{ChatEngineError, Result};
 use crate::domain::message::{Message, MessageRole, StreamingEvent};
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::{MessageRepo, SessionTypeRepo};
 use crate::domain::service::message_service::{
     MessageEventKind, MessageService, SendMessageStream,
 };
 use crate::domain::service::plugin_service::PluginService;
 use crate::domain::service::session_service::{Identity, merge_plugin_metadata};
-use crate::domain::session::Session;
-use crate::infra::db::entity::session_type as session_type_entity;
-use crate::infra::db::repo::message_repo::MessageRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
+use crate::domain::session::{Session, SessionType};
 
 /// Default plugin-call deadline applied to `on_session_updated` during
 /// session-type switching. Mirrors the lifecycle-hook budget in
@@ -170,7 +168,7 @@ pub trait VariantRepo: Send + Sync {
         session_id: Uuid,
         new_session_type_id: Uuid,
         new_capabilities: JsonValue,
-    ) -> Result<crate::infra::db::entity::session::Model>;
+    ) -> Result<Session>;
 }
 
 // ============================================================================
@@ -753,12 +751,7 @@ impl VariantService {
         identity: &Identity,
         session_id: Uuid,
         target_session_type_id: Uuid,
-    ) -> Result<(
-        session_type_entity::Model,
-        String,
-        Vec<Capability>,
-        Option<JsonValue>,
-    )> {
+    ) -> Result<(SessionType, String, Vec<Capability>, Option<JsonValue>)> {
         let session = self.load_session(identity, session_id).await?;
         self.gate_lifecycle_mutation(&session)?;
 
@@ -896,7 +889,7 @@ impl VariantService {
         log_op_finished(started, "switch_type", session_id, session_id, None);
         increment_variant_creation_total("switch_type");
 
-        Ok(updated.into())
+        Ok(updated)
     }
 
     // ------------------------------------------------------------------
@@ -909,7 +902,7 @@ impl VariantService {
             .find_by_id(&identity.tenant_id, &identity.user_id, session_id)
             .await?
             .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
-        Ok(row.into())
+        Ok(row)
     }
 
     fn gate_lifecycle_mutation(&self, session: &Session) -> Result<()> {

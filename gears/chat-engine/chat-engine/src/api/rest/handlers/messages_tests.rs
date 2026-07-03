@@ -1,4 +1,8 @@
 use super::*;
+use crate::domain::ports::NewSession;
+use crate::domain::ports::NewSessionType;
+use crate::domain::session::Session;
+use crate::domain::session::SessionType;
 use async_trait::async_trait;
 use chat_engine_sdk::error::PluginError;
 use chat_engine_sdk::models::LifecycleState;
@@ -10,30 +14,28 @@ use std::sync::atomic::AtomicUsize;
 use time::OffsetDateTime;
 use toolkit::ClientHub;
 use toolkit::client_hub::ClientScope;
+use uuid::Uuid;
 
 use crate::domain::message::{
     Message, StreamingChunkEvent, StreamingCompleteEvent, StreamingEvent, StreamingStartEvent,
 };
+use crate::domain::ports::PluginConfigRepo;
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::SessionTypeRepo;
+use crate::domain::ports::{FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage};
 use crate::domain::service::PluginService;
-use crate::infra::db::entity::{session as session_entity, session_type as session_type_entity};
-use crate::infra::db::repo::message_repo::{
-    FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage,
-};
-use crate::infra::db::repo::plugin_config_repo::PluginConfigRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
 
 // ---- Minimal mocks (mirror message_service::tests) ----
 
 struct MockSessionRepo {
-    s: Mutex<session_entity::Model>,
+    s: Mutex<Session>,
 }
 
 impl MockSessionRepo {
     fn new(session_type_id: Uuid) -> Arc<Self> {
         let now = OffsetDateTime::now_utc();
         Arc::new(Self {
-            s: Mutex::new(session_entity::Model {
+            s: Mutex::new(Session {
                 session_id: Uuid::new_v4(),
                 tenant_id: "t".into(),
                 user_id: "u".into(),
@@ -41,10 +43,8 @@ impl MockSessionRepo {
                 session_type_id: Some(session_type_id),
                 enabled_capabilities: None,
                 metadata: None,
-                lifecycle_state: "active".into(),
+                lifecycle_state: LifecycleState::Active,
                 share_token: None,
-                deleted_at: None,
-                scheduled_hard_delete_at: None,
                 created_at: now,
                 updated_at: now,
             }),
@@ -54,10 +54,7 @@ impl MockSessionRepo {
 
 #[async_trait]
 impl SessionRepo for MockSessionRepo {
-    async fn insert(
-        &self,
-        _m: session_entity::ActiveModel,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    async fn insert(&self, _m: NewSession) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.s.lock().clone())
     }
 
@@ -66,9 +63,9 @@ impl SessionRepo for MockSessionRepo {
         t: &str,
         u: &str,
         id: Uuid,
-    ) -> std::result::Result<Option<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<Session>, ChatEngineError> {
         let s = self.s.lock().clone();
-        if s.tenant_id == t && s.user_id == u && s.session_id == id {
+        if s.tenant_id.as_str() == t && s.user_id.as_str() == u && s.session_id == id {
             Ok(Some(s))
         } else {
             Ok(None)
@@ -80,7 +77,7 @@ impl SessionRepo for MockSessionRepo {
         _tenant_id: &str,
         _user_id: &str,
         _query: &toolkit_odata::ODataQuery,
-    ) -> std::result::Result<toolkit_odata::Page<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<toolkit_odata::Page<Session>, ChatEngineError> {
         Ok(toolkit_odata::Page::empty(0))
     }
 
@@ -90,7 +87,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _i: Uuid,
         _m: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.s.lock().clone())
     }
 
@@ -100,7 +97,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _i: Uuid,
         _c: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.s.lock().clone())
     }
 
@@ -110,7 +107,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _i: Uuid,
         _s: LifecycleState,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.s.lock().clone())
     }
 
@@ -120,7 +117,7 @@ impl SessionRepo for MockSessionRepo {
         _u: &str,
         _i: Uuid,
         _d: i64,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.s.lock().clone())
     }
 
@@ -135,14 +132,14 @@ impl SessionRepo for MockSessionRepo {
 }
 
 struct MockSessionTypeRepo {
-    st: Mutex<session_type_entity::Model>,
+    st: Mutex<SessionType>,
 }
 
 impl MockSessionTypeRepo {
     fn new(id: Uuid, plugin_id: String) -> Arc<Self> {
         let now = OffsetDateTime::now_utc();
         Arc::new(Self {
-            st: Mutex::new(session_type_entity::Model {
+            st: Mutex::new(SessionType {
                 session_type_id: id,
                 name: "t".into(),
                 plugin_instance_id: Some(plugin_id),
@@ -157,15 +154,15 @@ impl MockSessionTypeRepo {
 impl SessionTypeRepo for MockSessionTypeRepo {
     async fn insert(
         &self,
-        _m: session_type_entity::ActiveModel,
-    ) -> std::result::Result<session_type_entity::Model, ChatEngineError> {
+        _m: NewSessionType,
+    ) -> std::result::Result<SessionType, ChatEngineError> {
         Ok(self.st.lock().clone())
     }
 
     async fn find_by_id(
         &self,
         id: Uuid,
-    ) -> std::result::Result<Option<session_type_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<SessionType>, ChatEngineError> {
         let s = self.st.lock().clone();
         if s.session_type_id == id {
             Ok(Some(s))
@@ -174,7 +171,7 @@ impl SessionTypeRepo for MockSessionTypeRepo {
         }
     }
 
-    async fn list(&self) -> std::result::Result<Vec<session_type_entity::Model>, ChatEngineError> {
+    async fn list(&self) -> std::result::Result<Vec<SessionType>, ChatEngineError> {
         Ok(vec![self.st.lock().clone()])
     }
 }

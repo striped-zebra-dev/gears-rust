@@ -36,20 +36,6 @@ fn reaction_type_serializes_snake_case() {
 }
 
 #[test]
-fn model_to_domain_unknown_value_collapses_to_none() {
-    let now = OffsetDateTime::now_utc();
-    let model = reaction_entity::Model {
-        message_id: Uuid::nil(),
-        user_id: "u".into(),
-        reaction_type: "purple_heart".into(),
-        created_at: now,
-        updated_at: now,
-    };
-    let domain: MessageReaction = model.into();
-    assert_eq!(domain.reaction_type, ReactionType::None);
-}
-
-#[test]
 fn event_carries_kind_and_now_timestamp() {
     let before = OffsetDateTime::now_utc();
     let event = MessageReactionEvent::new(

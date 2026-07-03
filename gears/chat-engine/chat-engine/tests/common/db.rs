@@ -20,13 +20,17 @@
 
 use std::sync::Arc;
 
+use chat_engine::domain::ports::MessageRepo;
+use chat_engine::domain::ports::PluginConfigRepo;
+use chat_engine::domain::ports::SessionRepo;
+use chat_engine::domain::ports::SessionTypeRepo;
 use chat_engine::infra::db::Migrator;
-use chat_engine::infra::db::entity::{file_citation, message, message_part, session, session_type};
+use chat_engine::infra::db::entity::{file_citation, message, message_part, session};
 use chat_engine::infra::db::repo::ChatEngineDb;
-use chat_engine::infra::db::repo::message_repo::{MessageRepo, SeaMessageRepo};
-use chat_engine::infra::db::repo::plugin_config_repo::{PluginConfigRepo, SeaPluginConfigRepo};
-use chat_engine::infra::db::repo::session_repo::{SeaSessionRepo, SessionRepo};
-use chat_engine::infra::db::repo::session_type_repo::{SeaSessionTypeRepo, SessionTypeRepo};
+use chat_engine::infra::db::repo::message_repo::SeaMessageRepo;
+use chat_engine::infra::db::repo::plugin_config_repo::SeaPluginConfigRepo;
+use chat_engine::infra::db::repo::session_repo::SeaSessionRepo;
+use chat_engine::infra::db::repo::session_type_repo::SeaSessionTypeRepo;
 use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryOrder};
 use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
@@ -93,15 +97,14 @@ pub async fn setup_sqlite() -> DbHarness {
 pub async fn seed_session_type(h: &DbHarness, plugin_instance_id: &str) -> Uuid {
     let id = Uuid::new_v4();
     let now = OffsetDateTime::now_utc();
-    let am = session_type::ActiveModel {
-        session_type_id: Set(id),
-        name: Set("integration-test".to_owned()),
-        plugin_instance_id: Set(Some(plugin_instance_id.to_owned())),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
     h.session_types
-        .insert(am)
+        .insert(chat_engine::domain::ports::NewSessionType {
+            session_type_id: id,
+            name: "integration-test".to_owned(),
+            plugin_instance_id: Some(plugin_instance_id.to_owned()),
+            created_at: now,
+            updated_at: now,
+        })
         .await
         .expect("insert session_type row");
     id
@@ -117,22 +120,19 @@ pub async fn seed_active_session(
 ) -> Uuid {
     let id = Uuid::new_v4();
     let now = OffsetDateTime::now_utc();
-    let am = session::ActiveModel {
-        session_id: Set(id),
-        tenant_id: Set(tenant_id.to_owned()),
-        user_id: Set(user_id.to_owned()),
-        client_id: Set(None),
-        session_type_id: Set(Some(session_type_id)),
-        enabled_capabilities: Set(None),
-        metadata: Set(None),
-        lifecycle_state: Set("active".to_owned()),
-        share_token: Set(None),
-        deleted_at: Set(None),
-        scheduled_hard_delete_at: Set(None),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-    h.sessions.insert(am).await.expect("insert session row");
+    h.sessions
+        .insert(chat_engine::domain::ports::NewSession {
+            session_id: id,
+            tenant_id: tenant_id.to_owned(),
+            user_id: user_id.to_owned(),
+            client_id: None,
+            session_type_id: Some(session_type_id),
+            metadata: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("insert session row");
     id
 }
 
@@ -368,7 +368,7 @@ pub fn db_provider(h: &DbHarness) -> &Arc<ChatEngineDb> {
 
 /// Test-only raw column flip on `sessions.lifecycle_state`. Production
 /// code MUST go through
-/// [`chat_engine::infra::db::repo::session_repo::SessionRepo::update_lifecycle_state`]
+/// [`chat_engine::domain::ports::SessionRepo::update_lifecycle_state`]
 /// so the service-layer transition checks fire; this bypass exists only
 /// to put a fixture row into any state the surrounding test wants
 /// to assert against (e.g. seeding a `soft_deleted` session and then

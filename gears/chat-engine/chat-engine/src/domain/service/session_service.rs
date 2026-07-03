@@ -25,7 +25,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sea_orm::ActiveValue::{NotSet, Set};
 use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use tokio::time::timeout;
@@ -39,15 +38,13 @@ use chat_engine_sdk::models::{Capability, CapabilityValue, LifecycleState, Tenan
 use chat_engine_sdk::plugin::{PluginCallContext, SessionPluginCtx};
 
 use crate::domain::error::{ChatEngineError, Result};
+use crate::domain::ports::{DEFAULT_SOFT_DELETE_RETENTION_DAYS, NewSession, SessionRepo};
+use crate::domain::ports::{NewSessionType, SessionTypeRepo};
 use crate::domain::service::plugin_service::PluginService;
 use crate::domain::service::webhook::{WebhookEmitter, WebhookEvent};
 use crate::domain::session::{
     RESERVED_METADATA_KEYS, Session, SessionType, ensure_can_transition, public_metadata,
 };
-use crate::infra::db::entity::session as session_entity;
-use crate::infra::db::entity::session_type as session_type_entity;
-use crate::infra::db::repo::session_repo::{DEFAULT_SOFT_DELETE_RETENTION_DAYS, SessionRepo};
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
 
 /// Default per-call plugin deadline applied when the service has no other
 /// signal. Mirrors the PRD §Performance budget for synchronous lifecycle
@@ -200,14 +197,16 @@ impl SessionService {
         // unhealthy plugin does not block the developer from registering
         // (per §1.5 — health is advisory). The plugin invocation below is
         // best-effort and never rolls back the insert.
-        let model = session_type_entity::ActiveModel {
-            session_type_id: Set(session_type_id),
-            name: Set(req.name.clone()),
-            plugin_instance_id: Set(req.plugin_instance_id.clone()),
-            created_at: Set(now),
-            updated_at: Set(now),
-        };
-        let inserted = self.session_types.insert(model).await?;
+        let inserted = self
+            .session_types
+            .insert(NewSessionType {
+                session_type_id,
+                name: req.name.clone(),
+                plugin_instance_id: req.plugin_instance_id.clone(),
+                created_at: now,
+                updated_at: now,
+            })
+            .await?;
 
         if let Some(plugin_instance_id) = req.plugin_instance_id.as_deref() {
             // Plugin presence is required when an id was supplied — return
@@ -283,12 +282,11 @@ impl SessionService {
             }
         }
 
-        Ok(SessionType::from_model(inserted))
+        Ok(inserted)
     }
 
     pub async fn list_session_types(&self, _identity: &Identity) -> Result<Vec<SessionType>> {
-        let rows = self.session_types.list().await?;
-        Ok(rows.into_iter().map(SessionType::from_model).collect())
+        self.session_types.list().await
     }
 
     pub async fn get_session_type(
@@ -301,7 +299,7 @@ impl SessionService {
             .find_by_id(session_type_id)
             .await?
             .ok_or_else(|| ChatEngineError::not_found("session_type", session_type_id))?;
-        Ok(SessionType::from_model(row))
+        Ok(row)
     }
 
     // ---------------------------------------------------------------------
@@ -330,23 +328,19 @@ impl SessionService {
         let session_id = Uuid::new_v4();
         let now = OffsetDateTime::now_utc();
 
-        let active = session_entity::ActiveModel {
-            session_id: Set(session_id),
-            tenant_id: Set(identity.tenant_id.clone()),
-            user_id: Set(identity.user_id.clone()),
-            client_id: Set(identity.client_id.clone()),
-            session_type_id: Set(req.session_type_id),
-            enabled_capabilities: Set(None),
-            metadata: Set(req.metadata),
-            lifecycle_state: Set(LifecycleState::Active.as_str().to_string()),
-            share_token: Set(None),
-            deleted_at: NotSet,
-            scheduled_hard_delete_at: NotSet,
-            created_at: Set(now),
-            updated_at: Set(now),
-        };
-
-        let inserted = self.sessions.insert(active).await?;
+        let inserted = self
+            .sessions
+            .insert(NewSession {
+                session_id,
+                tenant_id: identity.tenant_id.clone(),
+                user_id: identity.user_id.clone(),
+                client_id: identity.client_id.clone(),
+                session_type_id: req.session_type_id,
+                metadata: req.metadata,
+                created_at: now,
+                updated_at: now,
+            })
+            .await?;
         let inserted_id = inserted.session_id;
 
         // Invoke the plugin once a session-type with a bound plugin exists.
@@ -445,7 +439,7 @@ impl SessionService {
                 .await?;
         }
 
-        let session: Session = persisted.into();
+        let session: Session = persisted;
 
         // Webhook event — best-effort, never blocks the response.
         self.webhooks
@@ -469,7 +463,7 @@ impl SessionService {
             .find_by_id(&identity.tenant_id, &identity.user_id, session_id)
             .await?
             .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
-        Ok(redact_session(row.into()))
+        Ok(redact_session(row))
     }
 
     pub async fn list_sessions(
@@ -481,7 +475,7 @@ impl SessionService {
             .sessions
             .list_paginated(&identity.tenant_id, &identity.user_id, query)
             .await?;
-        Ok(page.map_items(|row| redact_session(Session::from(row))))
+        Ok(page.map_items(redact_session))
     }
 
     pub async fn update_metadata(
@@ -494,7 +488,7 @@ impl SessionService {
 
         let row = self.load_modifiable(identity, session_id).await?;
         // Soft-deleted sessions cannot receive metadata writes per the spec.
-        let state = parse_state(&row.lifecycle_state);
+        let state = row.lifecycle_state;
         if matches!(
             state,
             LifecycleState::SoftDeleted | LifecycleState::HardDeleted
@@ -513,7 +507,7 @@ impl SessionService {
                 Some(metadata),
             )
             .await?;
-        Ok(redact_session(updated.into()))
+        Ok(redact_session(updated))
     }
 
     pub async fn update_capabilities(
@@ -523,7 +517,7 @@ impl SessionService {
         caps: Vec<CapabilityValue>,
     ) -> Result<Session> {
         let row = self.load_modifiable(identity, session_id).await?;
-        let state = parse_state(&row.lifecycle_state);
+        let state = row.lifecycle_state;
         if matches!(
             state,
             LifecycleState::SoftDeleted | LifecycleState::HardDeleted
@@ -601,12 +595,12 @@ impl SessionService {
                 )
                 .await?;
         }
-        Ok(redact_session(updated.into()))
+        Ok(redact_session(updated))
     }
 
     pub async fn archive_session(&self, identity: &Identity, session_id: Uuid) -> Result<Session> {
         let row = self.load_modifiable(identity, session_id).await?;
-        let from = parse_state(&row.lifecycle_state);
+        let from = row.lifecycle_state;
         ensure_can_transition(from, LifecycleState::Archived)?;
 
         let updated = self
@@ -626,19 +620,25 @@ impl SessionService {
             })
             .await
             .unwrap_or_else(|err| warn!(error = %err, "webhook emit failed for session.archived"));
-        Ok(redact_session(updated.into()))
+        Ok(redact_session(updated))
     }
 
     pub async fn restore_session(&self, identity: &Identity, session_id: Uuid) -> Result<Session> {
         let row = self.load_modifiable(identity, session_id).await?;
-        let from = parse_state(&row.lifecycle_state);
+        let from = row.lifecycle_state;
         ensure_can_transition(from, LifecycleState::Active)?;
 
         // Refuse to restore once the hard-delete window has passed (per
         // ADR-0021): the row is technically still readable but the spec
         // requires a clear failure rather than silently re-arming a
-        // session that's about to be reaped.
-        if let Some(scheduled) = row.scheduled_hard_delete_at
+        // session that's about to be reaped. The soft-delete bookkeeping
+        // column is persistence-internal, so it comes from a targeted repo
+        // query rather than the domain `Session`.
+        let scheduled_hard_delete_at = self
+            .sessions
+            .scheduled_hard_delete_at(&identity.tenant_id, &identity.user_id, session_id)
+            .await?;
+        if let Some(scheduled) = scheduled_hard_delete_at
             && scheduled < OffsetDateTime::now_utc()
         {
             return Err(ChatEngineError::conflict(
@@ -663,7 +663,7 @@ impl SessionService {
             })
             .await
             .unwrap_or_else(|err| warn!(error = %err, "webhook emit failed for session.restored"));
-        Ok(redact_session(updated.into()))
+        Ok(redact_session(updated))
     }
 
     pub async fn delete_session(
@@ -673,7 +673,7 @@ impl SessionService {
         hard: bool,
     ) -> Result<SessionDeleteOutcome> {
         let row = self.load_modifiable(identity, session_id).await?;
-        let from = parse_state(&row.lifecycle_state);
+        let from = row.lifecycle_state;
         let target = if hard {
             LifecycleState::HardDeleted
         } else {
@@ -727,7 +727,7 @@ impl SessionService {
                     warn!(error = %err, "webhook emit failed for session.soft_deleted");
                 });
             Ok(SessionDeleteOutcome::Soft {
-                session: redact_session(updated.into()),
+                session: redact_session(updated),
             })
         }
     }
@@ -736,11 +736,7 @@ impl SessionService {
     // Internals
     // ---------------------------------------------------------------------
 
-    async fn load_modifiable(
-        &self,
-        identity: &Identity,
-        session_id: Uuid,
-    ) -> Result<session_entity::Model> {
+    async fn load_modifiable(&self, identity: &Identity, session_id: Uuid) -> Result<Session> {
         self.sessions
             .find_by_id(&identity.tenant_id, &identity.user_id, session_id)
             .await?
@@ -785,10 +781,6 @@ pub fn reject_reserved_metadata(metadata: Option<&JsonValue>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn parse_state(raw: &str) -> LifecycleState {
-    LifecycleState::from_str_value(raw).unwrap_or(LifecycleState::Active)
 }
 
 fn capabilities_to_json(caps: Vec<Capability>) -> JsonValue {
@@ -836,32 +828,6 @@ pub fn redact_session(mut s: Session) -> Session {
     // share_token is owned by Phase 10 — Phase 4 must not leak it.
     s.share_token = None;
     s
-}
-
-// ---------------- Conversion helpers for SessionType ----------------
-
-trait SessionTypeFromModel: Sized {
-    fn from_model(model: session_type_entity::Model) -> Self;
-}
-
-impl SessionTypeFromModel for SessionType {
-    fn from_model(model: session_type_entity::Model) -> Self {
-        SessionType {
-            session_type_id: model.session_type_id,
-            name: model.name,
-            plugin_instance_id: model.plugin_instance_id,
-            created_at: model.created_at,
-            updated_at: model.updated_at,
-        }
-    }
-}
-
-// Phase 2 only emitted the bridge for `Session`; the `SessionType` bridge is
-// declared here per the Phase 2 contract's open-items list.
-impl From<session_type_entity::Model> for SessionType {
-    fn from(model: session_type_entity::Model) -> Self {
-        <SessionType as SessionTypeFromModel>::from_model(model)
-    }
 }
 
 #[cfg(test)]

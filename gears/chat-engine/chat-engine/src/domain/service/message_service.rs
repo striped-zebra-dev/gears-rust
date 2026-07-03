@@ -7,7 +7,7 @@
 //!    the local `validate_request` step.
 //! 2. Inserts the user message + a pre-allocated assistant stub in a single
 //!    SERIALIZABLE transaction (see
-//!    [`crate::infra::db::repo::message_repo::MessageRepo::insert_user_and_assistant_stub`]).
+//!    [`crate::domain::ports::MessageRepo::insert_user_and_assistant_stub`]).
 //! 3. Builds the active-path history and dispatches to the backend plugin
 //!    via `ClientHub::get_scoped::<dyn ChatEngineBackendPlugin>`.
 //! 4. Forwards the plugin's `PluginStream` through a bounded
@@ -63,17 +63,17 @@ use crate::domain::message::{
     Message, StreamingChunkEvent, StreamingCompleteEvent, StreamingErrorEvent, StreamingEvent,
     StreamingStartEvent,
 };
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::SessionTypeRepo;
+use crate::domain::ports::StreamEventBuffer;
+use crate::domain::ports::{
+    FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage, PartCitations,
+};
 use crate::domain::service::plugin_service::PluginService;
 use crate::domain::service::session_service::{Identity, redact_session};
 use crate::domain::service::webhook::{NoopWebhookEmitter, WebhookEmitter, WebhookEvent};
 use crate::domain::session::Session;
 use crate::domain::stream_delta::DeltaProjector;
-use crate::infra::db::repo::message_repo::{
-    FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage, PartCitations,
-};
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
-use crate::infra::db::repo::stream_event_repo::StreamEventBuffer;
 
 /// Default maximum number of pending events in the bounded backpressure
 /// channel between the plugin driver task and the NDJSON sink. Per
@@ -752,8 +752,7 @@ impl MessageService {
             .await?
             .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
 
-        let state =
-            LifecycleState::from_str_value(&row.lifecycle_state).unwrap_or(LifecycleState::Active);
+        let state = row.lifecycle_state;
         if matches!(
             state,
             LifecycleState::SoftDeleted | LifecycleState::HardDeleted
@@ -780,7 +779,7 @@ impl MessageService {
         // the session back to the caller (Phase 14 DTO mapping mirrors the
         // same redaction; we apply it here so direct callers of the
         // service surface get the same shape).
-        Ok(redact_session(updated.into()))
+        Ok(redact_session(updated))
     }
 
     /// Phase 6: pre-allocate a fresh assistant variant sibling under
@@ -998,7 +997,7 @@ impl MessageService {
         //    tenant" (→ 403) without ever returning the foreign row. The
         //    repo never hands out cross-scope data; we only see the row
         //    when ownership matches.
-        use crate::infra::db::repo::session_repo::SessionScopeCheck;
+        use crate::domain::ports::SessionScopeCheck;
         match self
             .sessions
             .check_session_scope(&identity.tenant_id, &identity.user_id, session_id)
@@ -1121,8 +1120,7 @@ impl MessageService {
             .ok_or_else(|| ChatEngineError::not_found("session", req.session_id))?;
 
         // Lifecycle state must allow new messages — only Active does.
-        let state = LifecycleState::from_str_value(&session.lifecycle_state)
-            .unwrap_or(LifecycleState::Active);
+        let state = session.lifecycle_state;
         if !matches!(state, LifecycleState::Active) {
             return Err(ChatEngineError::conflict(format!(
                 "session is {state} and does not accept new messages",

@@ -1,31 +1,31 @@
 use super::*;
+use crate::domain::ports::NewSession;
+use crate::domain::ports::NewSessionType;
+use crate::domain::session::Session;
+use crate::domain::session::SessionType;
 use async_trait::async_trait;
 use chat_engine_sdk::models::LifecycleState;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use time::OffsetDateTime;
 use toolkit::ClientHub;
+use uuid::Uuid;
 
 use crate::domain::message::{Message, MessagePart, MessageRole};
-use crate::infra::db::entity::{session as session_entity, session_type as session_type_entity};
-use crate::infra::db::repo::message_repo::{
-    FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage,
-};
-use crate::infra::db::repo::plugin_config_repo::PluginConfigRepo;
-use crate::infra::db::repo::reaction_repo::{
-    ReactionDeleteOutcome, ReactionRepo, ReactionUpsertOutcome,
-};
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
+use crate::domain::ports::PluginConfigRepo;
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::SessionTypeRepo;
+use crate::domain::ports::{FinalizeOutcome, InsertedPair, MessageRepo, NewUserMessage};
+use crate::domain::ports::{ReactionDeleteOutcome, ReactionRepo, ReactionUpsertOutcome};
 
 // ----------------------------- Stubs ----------------------------------
 
 struct StubSessionRepo {
-    session: Mutex<session_entity::Model>,
+    session: Mutex<Session>,
 }
 
 impl StubSessionRepo {
-    fn new(session: session_entity::Model) -> Arc<Self> {
+    fn new(session: Session) -> Arc<Self> {
         Arc::new(Self {
             session: Mutex::new(session),
         })
@@ -34,10 +34,7 @@ impl StubSessionRepo {
 
 #[async_trait]
 impl SessionRepo for StubSessionRepo {
-    async fn insert(
-        &self,
-        _m: session_entity::ActiveModel,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    async fn insert(&self, _m: NewSession) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.session.lock().clone())
     }
 
@@ -46,9 +43,12 @@ impl SessionRepo for StubSessionRepo {
         tenant_id: &str,
         user_id: &str,
         session_id: Uuid,
-    ) -> std::result::Result<Option<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<Session>, ChatEngineError> {
         let s = self.session.lock().clone();
-        if s.tenant_id == tenant_id && s.user_id == user_id && s.session_id == session_id {
+        if s.tenant_id.as_str() == tenant_id
+            && s.user_id.as_str() == user_id
+            && s.session_id == session_id
+        {
             Ok(Some(s))
         } else {
             Ok(None)
@@ -60,7 +60,7 @@ impl SessionRepo for StubSessionRepo {
         _tenant_id: &str,
         _user_id: &str,
         _query: &toolkit_odata::ODataQuery,
-    ) -> std::result::Result<toolkit_odata::Page<session_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<toolkit_odata::Page<Session>, ChatEngineError> {
         Ok(toolkit_odata::Page::empty(0))
     }
 
@@ -70,7 +70,7 @@ impl SessionRepo for StubSessionRepo {
         _u: &str,
         _i: Uuid,
         _m: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.session.lock().clone())
     }
 
@@ -80,7 +80,7 @@ impl SessionRepo for StubSessionRepo {
         _u: &str,
         _i: Uuid,
         _c: Option<JsonValue>,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.session.lock().clone())
     }
 
@@ -90,7 +90,7 @@ impl SessionRepo for StubSessionRepo {
         _u: &str,
         _i: Uuid,
         _s: LifecycleState,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.session.lock().clone())
     }
 
@@ -100,7 +100,7 @@ impl SessionRepo for StubSessionRepo {
         _u: &str,
         _i: Uuid,
         _d: i64,
-    ) -> std::result::Result<session_entity::Model, ChatEngineError> {
+    ) -> std::result::Result<Session, ChatEngineError> {
         Ok(self.session.lock().clone())
     }
 
@@ -120,19 +120,19 @@ struct StubSessionTypeRepo;
 impl SessionTypeRepo for StubSessionTypeRepo {
     async fn insert(
         &self,
-        _m: session_type_entity::ActiveModel,
-    ) -> std::result::Result<session_type_entity::Model, ChatEngineError> {
+        _m: NewSessionType,
+    ) -> std::result::Result<SessionType, ChatEngineError> {
         unreachable!()
     }
 
     async fn find_by_id(
         &self,
         _id: Uuid,
-    ) -> std::result::Result<Option<session_type_entity::Model>, ChatEngineError> {
+    ) -> std::result::Result<Option<SessionType>, ChatEngineError> {
         Ok(None)
     }
 
-    async fn list(&self) -> std::result::Result<Vec<session_type_entity::Model>, ChatEngineError> {
+    async fn list(&self) -> std::result::Result<Vec<SessionType>, ChatEngineError> {
         Ok(vec![])
     }
 }
@@ -317,9 +317,9 @@ fn make_session(
     user_id: &str,
     session_id: Uuid,
     enabled_capabilities: Option<JsonValue>,
-) -> session_entity::Model {
+) -> Session {
     let now = OffsetDateTime::now_utc();
-    session_entity::Model {
+    Session {
         session_id,
         tenant_id: tenant_id.into(),
         user_id: user_id.into(),
@@ -327,10 +327,8 @@ fn make_session(
         session_type_id: None,
         enabled_capabilities,
         metadata: None,
-        lifecycle_state: "active".into(),
+        lifecycle_state: LifecycleState::Active,
         share_token: None,
-        deleted_at: None,
-        scheduled_hard_delete_at: None,
         created_at: now,
         updated_at: now,
     }

@@ -75,13 +75,13 @@ use crate::domain::message::{
     StreamingChunkEvent, StreamingCompleteEvent, StreamingErrorEvent, StreamingEvent,
     StreamingStartEvent,
 };
+use crate::domain::ports::MessageRepo;
+use crate::domain::ports::SessionRepo;
+use crate::domain::ports::SessionTypeRepo;
 use crate::domain::retention::RetentionPolicy;
 use crate::domain::service::plugin_service::PluginService;
 use crate::domain::service::session_service::Identity;
 use crate::domain::session::{Session, get_retention_policy, set_retention_policy};
-use crate::infra::db::repo::message_repo::MessageRepo;
-use crate::infra::db::repo::session_repo::SessionRepo;
-use crate::infra::db::repo::session_type_repo::SessionTypeRepo;
 
 /// Default per-call plugin deadline for `on_session_summary`. Mirrors the
 /// streaming-message budget — summaries can legitimately take time to emit
@@ -556,7 +556,7 @@ impl IntelligenceService {
         let mut outcomes: Vec<SessionCleanupOutcome> = Vec::with_capacity(active.len());
 
         for row in active {
-            let session: Session = row.into();
+            let session: Session = row;
             let policy = resolve_effective_policy(&session);
             let label = retention_policy_label(&policy);
 
@@ -745,7 +745,7 @@ impl IntelligenceService {
             .find_by_id(&identity.tenant_id, &identity.user_id, session_id)
             .await?
             .ok_or_else(|| ChatEngineError::not_found("session", session_id))?;
-        Ok(row.into())
+        Ok(row)
     }
 
     /// Spawn the streaming driver that pumps the plugin's summary stream

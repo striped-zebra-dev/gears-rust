@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::error::ChatEngineError;
-use crate::infra::db::repo::stream_event_repo::BufferedEvent;
+use crate::domain::ports::BufferedEvent;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::json;
