@@ -248,6 +248,38 @@ impl S3Backend {
         }
         Ok(hasher.finalize())
     }
+
+    /// POST a `CompleteMultipartUpload` request that assembles `parts`
+    /// (defensively sorted ascending by part number) into the final object.
+    /// Unlike the trait's `complete_multipart`, this does **not** re-read the
+    /// assembled object to hash it: callers that already hold the content
+    /// digest — notably `put_stream`, which hashes incrementally as it uploads
+    /// — call this directly to skip a redundant full re-download of a
+    /// (potentially multi-gigabyte) object. `complete_multipart` layers
+    /// `get_and_hash_streaming` on top of this only when the whole-object
+    /// digest is genuinely required (the control-plane multipart flow).
+    async fn finalize_multipart(
+        &self,
+        path: &str,
+        upload_handle: &str,
+        parts: &[(u32, String)],
+    ) -> Result<(), DomainError> {
+        let mut sorted_parts = parts.to_vec();
+        sorted_parts.sort_by_key(|(part_number, _)| *part_number);
+        let etags: Vec<&str> = sorted_parts.iter().map(|(_, etag)| etag.as_str()).collect();
+
+        let key = Self::path_to_key(path);
+        let action = self.bucket.complete_multipart_upload(
+            Some(&self.credentials),
+            key,
+            upload_handle,
+            etags.iter().copied(),
+        );
+        let url = action.sign(SIGN_DURATION);
+        let body = action.body();
+        self.send_and_check(self.http.post(url).body(body)).await?;
+        Ok(())
+    }
 }
 
 impl fmt::Debug for S3Backend {
@@ -390,13 +422,15 @@ impl StorageBackend for S3Backend {
                         }
                     }
                 }
-                match self.complete_multipart(path, &handle, &parts).await {
-                    // The incrementally-computed digest is bit-identical to
-                    // `complete_multipart`'s own re-read-and-hash (same
-                    // bytes) — returning the incremental one avoids a
-                    // redundant `GetObject` on every large upload. A test
-                    // asserts the two actually agree.
-                    Ok(_reread_digest) => Ok((bytes_written, digest)),
+                // Use `finalize_multipart`, not `complete_multipart`, so the
+                // just-assembled object is never re-downloaded just to hash it:
+                // the digest was already computed incrementally as the bytes
+                // were uploaded, and is bit-identical to what re-reading and
+                // hashing the stored object would yield (a test asserts the two
+                // actually agree). This keeps a large streaming upload to a
+                // single pass over the bytes instead of upload-then-re-download.
+                match self.finalize_multipart(path, &handle, &parts).await {
+                    Ok(()) => Ok((bytes_written, digest)),
                     Err(e) => {
                         drop(self.abort_multipart(path, &handle).await);
                         Err(e)
@@ -668,20 +702,7 @@ impl StorageBackend for S3Backend {
         upload_handle: &str,
         parts: &[(u32, String)],
     ) -> Result<Vec<u8>, DomainError> {
-        let mut sorted_parts = parts.to_vec();
-        sorted_parts.sort_by_key(|(part_number, _)| *part_number);
-        let etags: Vec<&str> = sorted_parts.iter().map(|(_, etag)| etag.as_str()).collect();
-
-        let key = Self::path_to_key(path);
-        let action = self.bucket.complete_multipart_upload(
-            Some(&self.credentials),
-            key,
-            upload_handle,
-            etags.iter().copied(),
-        );
-        let url = action.sign(SIGN_DURATION);
-        let body = action.body();
-        self.send_and_check(self.http.post(url).body(body)).await?;
+        self.finalize_multipart(path, upload_handle, parts).await?;
 
         // Re-read the fully assembled object and hash it incrementally,
         // rather than buffering it whole — the trait contract wants the
