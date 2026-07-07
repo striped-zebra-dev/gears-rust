@@ -80,8 +80,8 @@ implemented. FileStorage P1/P2 stores no sharing-related state, exposes no anony
 paths, and has no endpoints tied to that future decision.
 
 Versioning itself is **P1** (FileStorage-level, backend-agnostic: each version is a distinct immutable object plus a
-`content_id` pointer — see §3.1). P2 introduces multipart upload (server-authoritative parts plan with the
-tree-/streaming-hash work-out from ADR-0002), audit + events + quota + usage outbound flows, backend migration
+`content_id` pointer — see §3.1). P2 introduces multipart upload (server-authoritative parts plan with per-part
+SHA-256 hashing — see §4.2 and ADR-0006 for the content-hash combiner), audit + events + quota + usage outbound flows, backend migration
 (relocating bytes between backends without rotating URLs), the policy engine, and the **cleanup engine** (version
 retention + orphan reconciliation). P3 adds runtime BYOS backend configuration, server-side encryption, read audit,
 signed-URL key rotation, and the sharing capability described above. These phases are declared in the component model
@@ -143,8 +143,9 @@ See [PRD.md](./PRD.md) §1 "Overview" and §1.3 "Goals":
 |-------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `cpt-cf-file-storage-adr-sidecar-data-plane`          | Control/data-plane split: the control plane issues signed URLs; the **sidecar** moves all bytes; backends never addressed directly by clients (supersedes the prior proxy-all monolith design)          |
 | `cpt-cf-file-storage-adr-signed-url-transport`        | The signed-URL credential is a single **opaque PASETO `v4.public` token**, carried in the query (`?fs-token=`) or a header; its format is private to control + sidecar (others treat it as opaque bytes)      |
-| `cpt-cf-file-storage-adr-content-hash-selection`      | P1 ships the full hash-selection API with allow-list locked to `["SHA-256"]`; P2 expands the allow-list to BLAKE3 + XXH3 alongside multipart upload                                                    |
+| `cpt-cf-file-storage-adr-content-hash-selection`      | P1 ships the full hash-selection API with allow-list locked to `["SHA-256"]`; its P2 vision (config-driven `hash_policy`/`allowed_algorithms`/`selection_rules`, XXH3 allow-list expansion) was never implemented and is **superseded** by `cpt-cf-file-storage-adr-content-hash-modes`                                                    |
 | `cpt-cf-file-storage-adr-s3-client-selection`         | P2's `S3Backend` (`durable: true`, `multipart_native: true`) is built on `rusty-s3` (+ `quick-xml`), executed over the crate's existing `reqwest` stack — no second HTTP/TLS stack; presigning is unused, since the sidecar is the sole holder of S3 credentials |
+| `cpt-cf-file-storage-adr-content-hash-modes`          | Two SHA-256 content-hash modes — whole-object (single-part) and a multipart offset-manifest composite (`root = sha256` of per-part `{offset}:sha256(part)` manifest), computed on-the-fly at upload, never by re-reading; client-verifiable. |
 
 ### 1.3 Architecture Layers
 
@@ -763,17 +764,17 @@ intended decomposition. Their detailed designs live in P2/P3 FEATURE artifacts (
 
 | Component (`cpt-cf-file-storage-component-…`)         | Phase | One-line responsibility                                                                                                  | Forward reference                                                                              |
 |-------------------------------------------------------|-------|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
-| `multipart-coordinator`                               | P2    | Owns the multipart-upload lifecycle (initiate / part / complete / abort) and the per-part hash combiner from ADR-0002    | PRD `cpt-cf-file-storage-fr-multipart-upload`                                                  |
+| `multipart-coordinator`                               | P2    | Owns the multipart-upload lifecycle (initiate / part / complete / abort) and the per-part hash combiner — a SHA-256 re-hash of the assembled object at `complete` (see §4.2) | PRD `cpt-cf-file-storage-fr-multipart-upload`                                                  |
 | `policy-engine`                                       | P2    | Evaluates tenant/user policies (allowed types, size limits, custom-metadata limits)                                      | PRD `cpt-cf-file-storage-fr-allowed-types-policy`, `…fr-size-limits-policy`                    |
 | `cleanup-engine`                                      | P2    | Unified background process: whole-file retention pruning (age / inactivity / metadata) + orphan reconciliation; deletes files/version rows + backend objects via the sidecar; internal-only, audited. Per-version pruning of superseded (non-current) versions (≤ X versions / age T) is **P3** — deferred pending a versioning-policy schema | PRD `cpt-cf-file-storage-fr-retention-policies`, `…fr-orphan-reconciliation`                   |
 | `audit-publisher`                                     | P2    | Transactional outbox writer + async worker that drains to the platform audit sink                                        | PRD `cpt-cf-file-storage-fr-audit-trail`                                                       |
 | `event-publisher`                                     | P2    | EventBroker emitter for upload/update/delete events, gated by owner policy                                               | PRD `cpt-cf-file-storage-fr-file-events`                                                       |
 | `quota-adapter`                                       | P2    | Synchronous quota check before storage-consuming operations; usage reports asynchronously                                | PRD `cpt-cf-file-storage-fr-storage-quota`, `…fr-usage-reporting`                              |
 
-> **Implementation status (P2, dated 2026-07-07).** The quota half of `quota-adapter` is consumer-scaffolding only:
+> **Implementation status (P2).** The quota half of `quota-adapter` is consumer-scaffolding only:
 > `file-storage` defines the `QuotaClient` port and calls it (fail-closed on client error) from every
 > storage-increasing operation, but `gear.rs` wires `quota_client: None` (Tier 1 item 1.4) — no client is
-> configured in any deployment, so the check is a permissive/fail-**open** no-op today. Blocked on a Quota
+> configured in any deployment, so the check is a permissive/fail-**open** no-op. Blocked on a Quota
 > Enforcement SDK crate; `gears/system/quota-enforcement/` is docs-only (no Rust crate). The usage-reporting half is
 > further along — a `usage-collector-sdk` crate exists — though `usage_reporter` is also still `None` pending
 > integration (P2 1.12). See [../README.md](../README.md)'s Implementation status section and
@@ -791,20 +792,26 @@ The detailed multipart contract is **owned by the P2 FEATURE for `multipart-coor
 client sends its desired parameters (total size, preferred part size, concurrency) and the control plane returns the
 **exact** plan — part sizes/offsets plus a **signed URL per part** pointing at the sidecar. (This reverses an earlier
 draft that rejected a server-authoritative plan in favour of a client-driven `.../parts/{n}` model; in the sidecar
-architecture the server owns the plan, and server-chosen part boundaries can be aligned to the BLAKE3 tree.)
+architecture the server owns the plan.)
 
 - For a `multipart_native` backend the sidecar drives the backend's multipart API (`CreateMultipartUpload` → `PutPart`
   → `CompleteMultipartUpload`); for a non-native backend the sidecar offset-writes each part into the single
-  new-version object `/{file_id}/{version_id}` (still never mutating an existing object)
+  new-version object `/{file_id}/{version_id}` (still never mutating an existing object). **`local-filesystem` has no
+  multipart support at all** — `initiate_multipart`/`upload_part`/`complete_multipart`/`abort_multipart` all inherit
+  the trait's default `Err(multipart_not_supported)`; only `s3-compatible` and the in-memory backend implement
+  multipart
 - Each **per-part signed URL carries the part's exact `size` as a token claim**; the sidecar rejects a body whose
   length ≠ the claim (`413`) **before** writing, so oversized bytes never reach the backend — per-part size enforcement
   is therefore transfer-time, not deferred to `complete`
-- Each part's **BLAKE3 subtree hash** is persisted by the sidecar (via SDK) in `multipart_upload_parts.part_hash` in
-  the shared DB — durable so an upload is resumable and survives a sidecar crash; combined into the root at `complete`
+- Each part's hash is persisted by the sidecar (via SDK) in `multipart_upload_parts.part_hash` in the shared DB —
+  durable so an upload is resumable and survives a sidecar crash
 - `complete` binds the new version exactly like single-shot (CAS on `content_id`, `412` → rebind)
-- the effective hash algorithm is bounded by the backend's `allowed_algorithms`
-  (`cpt-cf-file-storage-adr-content-hash-selection`); P1 leaves `capabilities.multipart_native` declared on
-  `GET /storages` but inactive
+
+`part_hash` is a SHA-256 of each part's bytes (`hash::sha256(&data)`); it is persisted but never read back, and
+`complete_multipart` discards the collected part hashes, re-reads the fully assembled object from the backend
+(`GetObject` on S3; an in-memory concat), and computes a fresh SHA-256 over the whole object as the version's
+`hash_value`. [ADR-0006](./ADR/0006-cpt-cf-file-storage-adr-content-hash-modes.md) describes an offset-manifest
+composite mode that folds the per-part digests into a manifest instead, avoiding the re-read; see §4.2 for detail.
 
 Concrete request/response shapes (envelope fields, error codes, idempotency) are specified in the FEATURE artifact
 ([features/multipart-coordinator.md](./features/multipart-coordinator.md)) and in [api.md](./api.md). **Note**: the
@@ -1210,7 +1217,7 @@ and is immutable.
 | `version_id`      | `uuid`                                | FileStorage-assigned version identity; backend object key suffix             |
 | `mime_type`       | `text`                                | Declared & validated mime of this version                                    |
 | `size`            | `bigint`                              | Content size in bytes                                                        |
-| `hash_algorithm`  | `text`                                | P1: `'SHA-256'` only                                                          |
+| `hash_algorithm`  | `text`                                | Always `'SHA-256'` (P1 and P2, single mode); a `hash_mode` discriminator is proposed in ADR-0006 |
 | `hash_value`      | `bytea`                               | Content digest (32 bytes for SHA-256)                                        |
 | `status`          | `text` (`'pending'` \| `'available'`) | `'pending'` from pre-register until **finalize** (sidecar's post-`PUT` callback), then `'available'`. `bind` is a separate step (swaps `content_id`) and does not gate this column |
 | `is_current`      | `boolean`                             | Whether this version is the file's current content (matches `files.content_id`) |
@@ -1234,7 +1241,7 @@ best-effort afterwards. No automatic pruning in P1 — versions accumulate. The 
 by retention rule (age / inactivity / metadata, `cpt-cf-file-storage-fr-retention-policies`), which removes all of a
 file's versions when the file itself expires. **Superseded (non-current) version reclamation is deferred to P3**:
 `RetentionRuleBody` carries no per-version criterion (no `keep_last_n` / `max_non_current_age_days`) to drive it, so a
-non-current version that is never superseded by a whole-file expiry currently accumulates indefinitely — a known P3
+non-current version that is never superseded by a whole-file expiry accumulates indefinitely — a known P3
 gap, not a P2 bug (P2 remediation 2.9).
 
 #### Table: `files_custom_metadata`
@@ -1262,7 +1269,7 @@ in P2 (`cpt-cf-file-storage-fr-metadata-limits`); in P1 only sanity limits apply
 | Table                              | Phase | Purpose                                                                                  | Forward reference                                                |
 |------------------------------------|-------|------------------------------------------------------------------------------------------|------------------------------------------------------------------|
 | `multipart_uploads`                | P2    | In-flight multipart sessions: `upload_id`, `file_id`, parts list with per-part hashes    | `cpt-cf-file-storage-fr-multipart-upload`                        |
-| `multipart_upload_parts`           | P2    | One row per uploaded part: `backend_etag`/offset, `size`, `part_hash` (BLAKE3 subtree)    | `cpt-cf-file-storage-fr-multipart-upload`                        |
+| `multipart_upload_parts`           | P2    | One row per uploaded part: `backend_etag`/offset, `size`, `part_hash` (SHA-256 of the part's bytes, computed on-the-fly; persisted but not read back at `complete` — see ADR-0006 for a proposed manifest-building use) | `cpt-cf-file-storage-fr-multipart-upload`                        |
 | `idempotency_keys`                 | P2    | Owner-scoped idempotency for uploads                                                      | `cpt-cf-file-storage-fr-upload-idempotency`                      |
 | `audit_outbox`                     | P2    | Transactional-outbox rows drained by `audit-publisher` to the audit sink                 | `cpt-cf-file-storage-fr-audit-trail`                             |
 | `events_outbox`                    | P2    | Outbox for EventBroker file-write events                                                 | `cpt-cf-file-storage-fr-file-events`                             |
@@ -1388,12 +1395,24 @@ The hash and ETag share a derivation path but mean different things and live in 
 hasher and then forwarded unchanged. At end-of-stream the digest is finalized to a 32-byte value and reported to the
 control plane in the sidecar's **finalize** callback (not `bind`), which independently re-reads the backend object and
 recomputes the same digest as a defense-in-depth check before persisting it in `file_versions.hash_value` alongside
-the algorithm tag (`'SHA-256'`).
+the algorithm tag (`'SHA-256'`). For multipart, `complete_multipart` similarly discards the collected per-part hashes
+and either re-`GetObject`s the fully assembled object (S3) or re-concatenates the in-memory parts, then computes a
+fresh SHA-256 over the whole object as the version's hash.
 
 Per ADR-0002 the wire-protocol shape for hash policy already exists in P1 (per-backend `default_algorithm`,
 `allowed_algorithms`, `selection_rules`, client preference parameter on requests), but the `allowed_algorithms` set is
-locked to `["SHA-256"]` by configuration-schema validation. P2 expands the allow-list to include BLAKE3 and XXH3
-without any wire-format change.
+locked to `["SHA-256"]` by configuration-schema validation; ADR-0002's P2 allow-list widening was superseded by
+ADR-0006's narrower vision. [ADR-0006](./ADR/0006-cpt-cf-file-storage-adr-content-hash-modes.md) describes a
+content-hash-modes design (whole-object + multipart offset-manifest composite, still SHA-256-only, computed
+on-the-fly rather than by re-read).
+
+**Backend × multipart-hash capability (current).**
+
+| Backend              | Multipart support                                                                                                                                 | Hash mode                                                                                                       |
+|----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
+| `local-filesystem`   | **No** — `initiate_multipart`/`upload_part`/`complete_multipart`/`abort_multipart` all inherit the trait's default `Err(multipart_not_supported)` | whole-object SHA-256 only (single-part)                                                                        |
+| `s3-compatible` (S3) | Yes (native `CreateMultipartUpload`/`PutPart`/`CompleteMultipartUpload`)                                                                           | whole-object SHA-256 (single-part); multipart completes via re-`GetObject` + flat SHA-256 over the assembled object |
+| in-memory            | Yes (test/dev backend)                                                                                                                              | whole-object SHA-256 (single-part); multipart completes via in-memory concat + flat SHA-256                    |
 
 **ETag derivation.** The ETag is opaque and content-derived from the current version pointer:
 
@@ -1417,10 +1436,10 @@ Properties:
 not a capability — a forged ETag grants no access; conditional-request checks compare against the current DB value,
 and `content_id` is an unguessable random UUID. HMAC adds key-rotation complexity for no gain.
 
-**Why ETag ≠ hash?** Per ADR-0002 the content hash is a separate concern (P2 introduces algorithm choice; some
-algorithms — XXH3 — explicitly are not cryptographic; S3 facade integrations would break if clients assumed
-`ETag = MD5(content)`). Keeping the ETag opaque and pointer-derived isolates the cache-validator surface from the
-hash-algorithm surface.
+**Why ETag ≠ hash?** The content hash is a separate concern, scoped to identity/accidental-corruption detection rather
+than a general-purpose cache-validator — SHA-256 only, with no algorithm widening planned. S3 facade integrations
+would also break if clients assumed `ETag = MD5(content)`. Keeping the ETag opaque and pointer-derived isolates the
+cache-validator surface from the hash-algorithm surface.
 
 ### 4.3 Concurrency & Streaming Backpressure
 
@@ -1567,9 +1586,9 @@ limits apply (an active quota constrains an upload only when the control plane c
 aggregate-owner-quota gap across many concurrent presigns — reserve-at-presign / commit-at-bind / release-on-expiry — is
 a **P2 control-plane** concern, detailed in the P2 `cpt-cf-file-storage-fr-storage-quota` FEATURE.
 
-**Implementation status (P2, dated 2026-07-07)**: this whole paragraph describes intended behavior once quota is
+**Implementation status (P2)**: this whole paragraph describes intended behavior once quota is
 active. As of this branch, the basic per-request quota check itself is not active either — no `QuotaClient` is
-wired (`gear.rs`'s `quota_client: None`) — so no `max_size` is ever derived from a remaining quota today; see
+wired (`gear.rs`'s `quota_client: None`) — so no `max_size` is ever derived from a remaining quota; see
 [operations.md](./operations.md)'s "Storage quota (not enforced)" section.
 
 **Token opacity (recap).** Only the control plane (minter) and the sidecar (verifier) know the token's claim-set and
@@ -1800,15 +1819,16 @@ resumes** without re-uploading what already landed. Same hosts as §4.6. The stu
        { "part": 5, "offset": 268435456, "size": 67108864, "url": ".../parts/5?fs-token=v4.public...cccp5E" } ] }
    ```
    Each part URL carries a PASETO token exactly like §4.5: an `op=part` claim, the `file_id`/`upload_id`/part number in
-   the **path** (`/files/9c2a4f10/multipart/u7f1b2c3/parts/3`), and a short `exp` (here ~1 hour). Server-chosen part
-   boundaries are aligned to the BLAKE3 tree so the subtree hashes combine cleanly at completion.
+   the **path** (`/files/9c2a4f10/multipart/u7f1b2c3/parts/3`), and a short `exp` (here ~1 hour). The parts complete
+   via a SHA-256 re-hash of the assembled object (§4.2); an offset-manifest mode is proposed in ADR-0006.
 
 #### Phase B — Upload parts (with durable per-part state)
 
 3. The browser uploads parts in parallel (up to the `concurrency` hint), each straight to the **sidecar**:
    `PUT .../parts/1`, `PUT .../parts/2`, `PUT .../parts/3`. For each part the sidecar verifies the signature, streams
    the bytes to the backend (`PutPart` on a native backend, or an offset-write into the single new-version object
-   otherwise), computes the part's **BLAKE3 subtree hash**, validates magic bytes on **part 1** (`video/mp4`), and
+   otherwise), computes the part's SHA-256 hash on-the-fly, validates magic bytes on **part 1**
+   (`video/mp4`), and
    **persists the part state in the shared DB** (`multipart_upload_parts`: `backend_etag`/offset, `size`, `part_hash`).
 4. Say parts **1, 3, 4** land successfully (rows written) but parts **2 and 5** fail mid-flight, then the student's
    session breaks — they are logged out and walk away. Note the gap is **non-contiguous** (a middle part and the last
@@ -1852,7 +1872,7 @@ resumes** without re-uploading what already landed. Same hosts as §4.6. The stu
    The control plane reads all reported part rows, asks the backend to assemble/verify them
    (`CompleteMultipartUpload` on a `multipart_native` backend), and **finalizes** the version (`status = available`)
    from the assembled object's real size/hash — this flips `pending → available` exactly like single-shot finalize,
-   but it does **not** bind: `content_id` is untouched. **Today** this endpoint takes no `If-Match` and returns `204`
+   but it does **not** bind: `content_id` is untouched. This endpoint takes no `If-Match` and returns `204`
    with no body (see [features/multipart-coordinator.md](./features/multipart-coordinator.md) for the tracked gap
    between this and the richer `If-Match`/`200`-with-body contract this document originally described). The client
    still issues a **separate** `POST /files/9c2a4f10/bind {version_id: "5e0db7a2"}` afterwards, under the same

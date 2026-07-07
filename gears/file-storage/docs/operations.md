@@ -49,7 +49,7 @@ a URL remains valid after the authorization decision was made at signing (no per
 **Production recommendation**: keep short (minutes, not hours) for anything not explicitly meant to be long-lived or
 shareable; raise only for known bulk/batch workflows. **Misconfiguration risk**: too long → a leaked/logged URL stays
 exploitable for the full window; too short → legitimate slow uploads/downloads may need to be re-presigned mid-flight
-(no such retry-on-expiry logic exists in the SDK/handlers today, so a very small value can break large transfers).
+(no such retry-on-expiry logic exists in the SDK/handlers, so a very small value can break large transfers).
 
 ### `max_url_ttl_secs`
 Hard ceiling (seconds) the control plane will mint any signed URL to (`604800` = 7 days); enforced by `Issuer::issue`
@@ -219,7 +219,7 @@ See `docs/migration.sql`'s `idempotency_keys` table and `docs/api.md`'s `409` su
 
 ## Storage quota (not enforced)
 
-**Implementation status (P2, dated 2026-07-07).** `FileService` and `MultipartService` both accept an optional
+**Implementation status (P2).** `FileService` and `MultipartService` both accept an optional
 `quota_client: Option<Arc<dyn QuotaClient>>` and call `check_quota` / `check_quota_bytes`
 (`src/domain/service/create.rs`, `src/domain/multipart_service.rs`) before every storage-increasing operation
 (`create_file`, `presign_version`, multipart initiate) — see the `QuotaClient` trait in
@@ -230,10 +230,13 @@ See `docs/migration.sql`'s `idempotency_keys` table and `docs/api.md`'s `409` su
 There is no config knob for this in the table above because there is nothing to configure yet — `gear.rs`
 unconditionally constructs both services with `quota_client: None` (`TODO(P2)`, Tier 1 item 1.4). When `None`,
 `check_quota`/`check_quota_bytes` short-circuit to `Ok(())`. **This means storage quota is not enforced in any
-deployment today**: the effective behavior is permissive / fail-**open**, not the fail-closed behavior the port
+deployment**: the effective behavior is permissive / fail-**open**, not the fail-closed behavior the port
 was designed for. No `QuotaClient` implementation exists to wire in — the Quota Enforcement gear
 (`gears/system/quota-enforcement/`) is docs-only (PRD/DESIGN/ADRs, no Rust crate, no SDK). **Operators must not
 assume any storage limit is in effect** until this is wired.
+
+Content-hash modes (whole-object SHA-256; multipart offset-manifest) are a proposed future design — see
+[ADR-0006](./ADR/0006-cpt-cf-file-storage-adr-content-hash-modes.md); not implemented.
 
 ## The `SignatureProvider` / `SignatureVerifier` abstraction
 

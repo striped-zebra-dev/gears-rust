@@ -146,7 +146,7 @@ deployment.
   `upload_id`/`part_number` must match the path).
 - **Request body** (`application/json`): `{ "backend_etag": "<string>", "hash_hex": "<64-char lowercase hex>", "size": <i64> }`
   — the backend-assigned ETag for this part plus the part's measured SHA-256 and byte length.
-- **Response**: `204 No Content`. Errors: `403`, `404`, `500` (no `400` is currently declared on this route, even
+- **Response**: `204 No Content`. Errors: `403`, `404`, `500` (no `400` is declared on this route, even
   though a malformed `hash_hex` is rejected via `DomainError::Validation` — not re-verified whether that surfaces
   differently in practice).
 
@@ -179,7 +179,7 @@ Notes:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `declared_mime` | `string` | yes | MIME type of the file being uploaded (e.g. `video/mp4`). Validated against the effective allowed-types policy. |
-| `declared_size` | `uint64` | yes | Total file size in bytes. The control plane validates this against the effective policy size limit and storage quota at initiate time — exactly like single-part upload does at presign time — so that oversized or quota-exceeding uploads are rejected before any bytes are transferred. `400` if it exceeds the policy size limit; `429` if it would exceed the storage quota. **Implementation status (P2, dated 2026-07-07)**: the `429` quota path only fires when a `QuotaClient` is configured — none is, in any deployment today (`gear.rs`'s `quota_client: None`, Tier 1 item 1.4) — so callers will not currently observe quota rejections; see [operations.md](./operations.md#storage-quota-not-enforced). |
+| `declared_size` | `uint64` | yes | Total file size in bytes. The control plane validates this against the effective policy size limit and storage quota at initiate time — exactly like single-part upload does at presign time — so that oversized or quota-exceeding uploads are rejected before any bytes are transferred. `400` if it exceeds the policy size limit; `429` if it would exceed the storage quota. **Implementation status (P2)**: the `429` quota path only fires when a `QuotaClient` is configured — none is, in any deployment (`gear.rs`'s `quota_client: None`, Tier 1 item 1.4) — so callers do not observe quota rejections; see [operations.md](./operations.md#storage-quota-not-enforced). |
 
 **`P2-1` initiate response** (`application/json`) — the server-computed plan:
 
@@ -202,8 +202,8 @@ signed token (ADR-0004) carrying the part's `upload_id`, `part_number`, `offset`
 sidecar **MUST** reject a body whose length ≠ the `size` claim with `413` **before** writing — so per-part size is
 enforced at transfer time and oversized bytes never reach the backend. Re-`PUT` of the same part is idempotent
 (enables resume). For a `multipart_native` backend the sidecar drives the backend multipart API; otherwise it
-offset-writes each part into the single new-version object. Per-part **SHA-256** hashes (not BLAKE3 subtree hashes —
-see the implementation-status note below) are reported to the control plane via the `D2` report-part callback (see
+offset-writes each part into the single new-version object. Per-part **SHA-256** hashes are reported to the control
+plane via the `D2` report-part callback (see
 [Data-plane callbacks](#data-plane-callbacks-sidecar--control-plane-s2s-token-authenticated)) and persisted in
 `multipart_upload_parts.part_hash`; `complete` assembles from the reported parts.
 
@@ -216,8 +216,8 @@ FEATURE artifact **[features/multipart-coordinator.md](./features/multipart-coor
 > initiate-time `declared_size` gate is in place and `declared_size`/`part_size` are persisted on the session row so the
 > plan can be reconstituted for resume. The interim client-driven control-plane byte route (`PUT .../parts/{n}`) has
 > been **removed** — bytes flow exclusively to the sidecar (ADR-0003, FEATURE §8 migration). The complete-time
-> total-size check (assembled size == `declared_size`) remains as the defence-in-depth backstop. Note: per-part hashes
-> are **SHA-256** in P2 (not BLAKE3 subtree hashes); BLAKE3 alignment is deferred.
+> total-size check (assembled size == `declared_size`) remains as the defence-in-depth backstop. Per-part hashes are
+> **SHA-256** in P2.
 
 ## P2 — Policy engine
 
@@ -240,7 +240,7 @@ GET  /policy/effective?user_owner_id=<uuid>              compute the effective (
   restrictive already resolved): `allowed_mime_types` (`null` = unrestricted), `max_bytes`, `per_mime_max_bytes`,
   `metadata_limits`.
 - **There is no `DELETE /policy` route.** To relax a policy, `PUT` a replacement body (e.g. an empty/permissive one);
-  there is currently no way to remove a stored policy row entirely via the API.
+  there is no way to remove a stored policy row entirely via the API.
 - A concurrent `PUT /policy` race for the same scope is closed at the DB level by two partial unique indexes on
   `(tenant_id, scope, scope_owner_id)` (see `docs/migration.sql`); the upsert itself is wrapped in a transaction.
 
@@ -316,7 +316,7 @@ retry and the bytes are not re-sent (the version persists as-is). Re-presigning 
 `POST /files/{id}/versions` + upload creates a **new sibling `version_id`**. If that sibling is abandoned before
 `finalize`, the cleanup engine's abandoned-pending sweep reclaims it after `orphan_grace_secs`
 (`cpt-cf-file-storage-fr-orphan-reconciliation`) — but if it is finalized (`available`) and simply never bound, it is
-**not** swept by anything today: it persists as an extra stored version until it is either bound or explicitly
+**not** swept by anything: it persists as an extra stored version until it is either bound or explicitly
 deleted. Clients **should** rebind the already-uploaded `version_id` instead, both to avoid the wasted upload and to
 avoid leaving this unswept sibling behind.
 
@@ -361,7 +361,7 @@ avoid leaving this unswept sibling behind.
   it can never itself trigger `413` (that's `max_size`'s mid-stream abort, and the two claims are documented as
   mutually exclusive). **Unverified further**: `rg -n "exact_size:" src/` finds the field only in its struct
   definition and in tests — no presign path (`create.rs`/`write.rs`) was found actually setting it on an issued
-  token as of this doc pass, so this claim/status pairing may currently be dead code; flagged for the team, not
+  token as of this doc pass, so this claim/status pairing may be dead code; flagged for the team, not
   fixed here (out of scope for this doc pass).<br>
   ² previously documented as `422`; `bin/sidecar.rs`'s `expected_hash` check returns `(StatusCode::BAD_REQUEST, ...)`
   (`400`), not `422` — no `422` response exists anywhere in this gear.
@@ -399,7 +399,9 @@ avoid leaving this unswept sibling behind.
 - `If-None-Match`: optional on `GET`/`HEAD` (control metadata and sidecar download); match → `304 Not Modified`.
 - ETag is opaque, derived from `(file_id, content_id)`, content-only, and explicitly **not** equal to the content
   hash. It changes exactly when content is (re)bound; a metadata-only `PATCH` does not change it. The content hash is
-  exposed separately as `X-FS-Hash-Algorithm` + `X-FS-Hash-Value` (P1: SHA-256, per ADR-0002).
+  exposed separately as `X-FS-Hash-Algorithm` + `X-FS-Hash-Value` (P1: SHA-256, per ADR-0002). Additional content-hash
+  modes (whole-object vs. multipart offset-manifest) are a proposed future design —
+  see [ADR-0006](./ADR/0006-cpt-cf-file-storage-adr-content-hash-modes.md); not implemented.
 
 ## Range support
 
@@ -487,10 +489,10 @@ X-FS-Meta-<key>: <value>                               # one header per custom m
   unparseable `Range` is **not** a `416` — it is ignored and the full body is served with `200`.
 - `429 Too Many Requests` — the `max_conns` claim for this `(file_id, op)` is exceeded (sidecar, P2); or the
   control-plane storage quota would be exceeded on `create_file`/`presign_version`/multipart `initiate`
-  (`QuotaExceeded`). **Implementation status (P2, dated 2026-07-07)**: the `QuotaExceeded` case is only reachable
-  when a `QuotaClient` is wired. None is, in any deployment today — `gear.rs` always passes `quota_client: None`
+  (`QuotaExceeded`). **Implementation status (P2)**: the `QuotaExceeded` case is only reachable
+  when a `QuotaClient` is wired. None is, in any deployment — `gear.rs` always passes `quota_client: None`
   (Tier 1 item 1.4), so `check_quota`/`check_quota_bytes` are a permissive no-op and this specific `429` cause
-  cannot currently occur. See [operations.md](./operations.md#storage-quota-not-enforced).
+  cannot occur. See [operations.md](./operations.md#storage-quota-not-enforced).
 
 Removed from this table (no corresponding code path found — verified by grepping the gear's `src/` for the status
 code and for any `DomainError` variant that could map to it): `422 Unprocessable Entity` (previously claimed for

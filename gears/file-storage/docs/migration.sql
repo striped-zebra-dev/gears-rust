@@ -209,11 +209,8 @@ COMMENT ON TABLE file_storage.files_custom_metadata IS
 
 -- P2 hash-policy widening (NOT IMPLEMENTED) ----------------------------------
 -- The P1 `file_versions.hash_algorithm` CHECK stays locked to 'SHA-256' in P2
--- as actually shipped (ADR-0002); the BLAKE3/XXH3 allow-list widening
--- described here in earlier drafts of this file was never implemented and has
--- been removed to avoid drifting ahead of the real schema. See Tier 4 item
--- 4.6 ("BLAKE3 alignment") in IMPLEMENTATION_PLAN_TEMP.txt for the pending
--- team decision on whether/when to pick this up.
+-- as actually shipped (ADR-0002).
+-- Content-hash modes (hash_mode/part_count/version_hash_manifest) are a PROPOSED future design — see ADR-0006; NOT migrated.
 
 
 -- Table: file_storage.multipart_uploads --------------------------------------
@@ -270,9 +267,7 @@ CREATE TABLE file_storage.multipart_upload_parts (
     part_number      int          NOT NULL  CHECK (part_number > 0),
     -- ETag-shaped per-part identifier returned by the backend on PutPart.
     backend_etag     text         NOT NULL,
-    -- Per-part hash. Currently SHA-256 (matches file_versions.hash_algorithm);
-    -- BLAKE3 subtree hashing was the original design intent but is deferred
-    -- (Tier 4 item 4.6, "BLAKE3 alignment").
+    -- Per-part hash. SHA-256 (matches file_versions.hash_algorithm).
     part_hash        bytea        NOT NULL,
     size             bigint       NOT NULL  CHECK (size >= 0),
     uploaded_at      timestamptz  NOT NULL  DEFAULT now(),
