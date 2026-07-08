@@ -2,7 +2,7 @@ Created:  2026-07-08 by Constructor Tech
 Updated:  2026-07-08 by Constructor Tech
 # Feature: Policy Engine (Allowed Types + Size Limits)
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-featstatus-policy-engine-implemented`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-featstatus-policy-engine-implemented`
 
 
 
@@ -34,7 +34,7 @@ Updated:  2026-07-08 by Constructor Tech
 
 ## 1. Feature Context
 
-- [x] `p2` - `cpt-cf-file-storage-feature-policy-engine`
+- [ ] `p2` - `cpt-cf-file-storage-feature-policy-engine`
 
 ### 1.1 Overview
 
@@ -102,9 +102,7 @@ User-facing interactions that start with an actor and describe the end-to-end fl
 **Steps**:
 1. [x] - `p1` - Client: GET /api/file-storage/v1/policy?scope={tenant|user}&scope_owner_id={uuid?} - `inst-policy-get-request`
 2. [x] - `p1` - API: parse `scope`; `400` if neither `"tenant"` nor `"user"` - `inst-policy-get-parse-scope`
-3. [x] - `p1` - Authorize: try `ADMIN_POLICY` on `("", None)` first (cross-owner/tenant-wide admin); on `Forbidden`,
-   fall back to `READ` and require `scope_owner_id` (when present) to equal the caller's own subject id — a
-   missing `scope_owner_id` (tenant-scope request) is treated as authorized on `READ` alone - `inst-policy-get-authz`
+3. [x] - `p1` - Authorize: try `ADMIN_POLICY` on `("", None)` first (cross-owner/tenant-wide admin); on `Forbidden`, fall back to `READ` and require `scope_owner_id` (when present) to equal the caller's own subject id — a missing `scope_owner_id` (tenant-scope request) is treated as authorized on `READ` alone - `inst-policy-get-authz`
 4. [x] - `p1` - DB: SELECT policy row for `(tenant_id, scope, scope_owner_id)` - `inst-policy-get-load`
 5. [x] - `p1` - RETURN 200 with the stored policy, or 204 if none exists - `inst-policy-get-return`
 
@@ -129,12 +127,9 @@ User-facing interactions that start with an actor and describe the end-to-end fl
 **Steps**:
 1. [x] - `p1` - Client: PUT /api/file-storage/v1/policy {scope, scope_owner_id?, body} - `inst-policy-set-request`
 2. [x] - `p1` - API: parse `scope`; `400` if invalid - `inst-policy-set-parse-scope`
-3. [x] - `p1` - Authorize: same `ADMIN_POLICY`-first, `WRITE`-plus-owner-match fallback as [Get Own
-   Policy](#get-own-policy), with `WRITE` instead of `READ` as the fallback action - `inst-policy-set-authz`
-4. [x] - `p1` - Validate: reject `scope = User` with no `scope_owner_id`, and reject any `*/*` mime pattern in
-   `allowed_mime_types`/`size_limits.per_mime` - `inst-policy-set-validate`
-5. [x] - `p1` - DB: upsert the `(tenant_id, scope, scope_owner_id)` row transactionally (partial-unique-index
-   backstop; two sequential upserts for the same scope leave exactly one row, never a duplicate) - `inst-policy-set-upsert`
+3. [x] - `p1` - Authorize: same `ADMIN_POLICY`-first, `WRITE`-plus-owner-match fallback as [Get Own Policy](#get-own-policy), with `WRITE` instead of `READ` as the fallback action - `inst-policy-set-authz`
+4. [x] - `p1` - Validate: reject `scope = User` with no `scope_owner_id`, and reject any `*/*` mime pattern in `allowed_mime_types`/`size_limits.per_mime` - `inst-policy-set-validate`
+5. [x] - `p1` - DB: upsert the `(tenant_id, scope, scope_owner_id)` row transactionally (partial-unique-index backstop; two sequential upserts for the same scope leave exactly one row, never a duplicate) - `inst-policy-set-upsert`
 6. [x] - `p1` - RETURN 200 with the stored policy (`created_at`/`updated_at` both the write's timestamp) - `inst-policy-set-return`
 
 ### Get Effective Policy
@@ -155,10 +150,8 @@ User-facing interactions that start with an actor and describe the end-to-end fl
 **Steps**:
 1. [x] - `p1` - Client: GET /api/file-storage/v1/policy/effective?user_owner_id={uuid?} - `inst-policy-eff-request`
 2. [x] - `p1` - Authorize `READ` on `("", None)` - `inst-policy-eff-authz`
-3. [x] - `p1` - DB: SELECT the tenant-scope policy row (always) and, if `user_owner_id` is present, the user-scope
-   row for that owner - `inst-policy-eff-load`
-4. [x] - `p1` - Algorithm: `cpt-cf-file-storage-algo-resolve-effective-policy` combines the two (either or both may
-   be absent) - `inst-policy-eff-resolve`
+3. [x] - `p1` - DB: SELECT the tenant-scope policy row (always) and, if `user_owner_id` is present, the user-scope row for that owner - `inst-policy-eff-load`
+4. [x] - `p1` - Algorithm: `cpt-cf-file-storage-algo-resolve-effective-policy` combines the two (either or both may be absent) - `inst-policy-eff-resolve`
 5. [x] - `p1` - RETURN 200 with the resolved `EffectivePolicy` - `inst-policy-eff-return`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -176,18 +169,10 @@ absence contributes no restriction from that level)
 **Output**: `EffectivePolicy { allowed_mime_types, max_bytes, per_mime_max_bytes, metadata_limits }`
 
 **Steps**:
-1. [x] - `p1` - Allowed mime types: a level is "restricted" only when its `allowed_mime_types` is non-empty (empty
-   means unrestricted at that level, not "nothing allowed"). Both unrestricted → `None` (all permitted). One
-   restricted → that level's set. Both restricted → intersection, resolved to the **narrower** pattern per
-   overlapping pair (`image/*` ∩ `image/png` = `image/png`, not `image/*`) - `inst-resolve-mime`
+1. [x] - `p1` - Allowed mime types: a level is "restricted" only when its `allowed_mime_types` is non-empty (empty means unrestricted at that level, not "nothing allowed"). Both unrestricted → `None` (all permitted). One restricted → that level's set. Both restricted → intersection, resolved to the **narrower** pattern per overlapping pair (`image/*` ∩ `image/png` = `image/png`, not `image/*`) - `inst-resolve-mime`
 2. [x] - `p1` - Global size limit: `min(tenant.max_bytes, user.max_bytes)`, `None` treated as unlimited (not zero) - `inst-resolve-size`
-3. [x] - `p1` - Per-mime overrides: union of patterns from both levels (identical pattern takes the smaller value),
-   then a second pass tightens every entry by any *broader* pattern that also covers it (a `image/* = 10MB`
-   wildcard cap always tightens a more-specific `image/png = 50MB` entry down to `10MB`, so a consumer that only
-   ever looks at the most-specific matching entry can never see a looser effective value than a covering wildcard
-   intended) - `inst-resolve-per-mime`
-4. [x] - `p1` - Metadata limits: smallest non-`None` value from each of `max_pairs`/`max_key_len`/`max_value_len`/
-   `max_total_bytes`, independently per field - `inst-resolve-metadata`
+3. [x] - `p1` - Per-mime overrides: union of patterns from both levels (identical pattern takes the smaller value), then a second pass tightens every entry by any *broader* pattern that also covers it (a `image/* = 10MB` wildcard cap always tightens a more-specific `image/png = 50MB` entry down to `10MB`, so a consumer that only ever looks at the most-specific matching entry can never see a looser effective value than a covering wildcard intended) - `inst-resolve-per-mime`
+4. [x] - `p1` - Metadata limits: smallest non-`None` value from each of `max_pairs`/`max_key_len`/`max_value_len`/`max_total_bytes`, independently per field - `inst-resolve-metadata`
 5. [x] - `p1` - RETURN the combined `EffectivePolicy` - `inst-resolve-return`
 
 ### Enforce Allowed-Types and Size Limits at Upload
@@ -218,12 +203,9 @@ called at **every** content-write entry point rather than each path re-implement
   did not
 
 **Steps**:
-1. [x] - `p1` - `check_allowed_mime`: `None` `allowed_mime_types` on the effective policy permits everything;
-   `Some([])` permits nothing; `Some(list)` requires an exact match or a `type/*` wildcard match - `inst-enforce-mime`
-2. [x] - `p1` - `compute_effective_max_bytes`: take `min` of the backend's hardware ceiling, the policy's global
-   `max_bytes`, and the smallest matching per-mime override — `None` in all three means unbounded - `inst-enforce-size-compute`
-3. [x] - `p1` - Compare the candidate size against the computed ceiling; `DomainError::policy_size_exceeded` if
-   over - `inst-enforce-size-compare`
+1. [x] - `p1` - `check_allowed_mime`: `None` `allowed_mime_types` on the effective policy permits everything; `Some([])` permits nothing; `Some(list)` requires an exact match or a `type/*` wildcard match - `inst-enforce-mime`
+2. [x] - `p1` - `compute_effective_max_bytes`: take `min` of the backend's hardware ceiling, the policy's global `max_bytes`, and the smallest matching per-mime override — `None` in all three means unbounded - `inst-enforce-size-compute`
+3. [x] - `p1` - Compare the candidate size against the computed ceiling; `DomainError::policy_size_exceeded` if over - `inst-enforce-size-compare`
 4. [x] - `p1` - RETURN `Ok(())` if both checks pass - `inst-enforce-return`
 
 > **Status code note (accuracy correction relative to earlier drafts of the multipart-coordinator FEATURE doc).**
@@ -247,14 +229,9 @@ P2 remediation 0.11: reject a policy body that would be silently dead or dangero
 detect it.
 
 **Steps**:
-1. [x] - `p2` - **IF** `scope == User` AND `scope_owner_id` is `None`: reject — the effective-policy reader always
-   queries the user-scope row with `Some(owner_id)`, so a `None`-owner user-scope row could never be read back - `inst-validate-user-owner`
-2. [x] - `p2` - **IF** `allowed_mime_types` contains `"*/*"`: reject — `*/*` splits into a base type of `"*"`,
-   which never equals a real mime type's base, so it silently matches **nothing** (an accidental deny-all) rather
-   than the "allow everything" the caller almost certainly intended; the correct way to express "no restriction" is
-   to omit the field entirely - `inst-validate-star-slash-star-allowed`
-3. [x] - `p2` - **IF** `size_limits.per_mime` contains an entry with `mime == "*/*"`: reject, same reasoning — use
-   `size_limits.max_bytes` for a global limit instead - `inst-validate-star-slash-star-per-mime`
+1. [x] - `p2` - **IF** `scope == User` AND `scope_owner_id` is `None`: reject — the effective-policy reader always queries the user-scope row with `Some(owner_id)`, so a `None`-owner user-scope row could never be read back - `inst-validate-user-owner`
+2. [x] - `p2` - **IF** `allowed_mime_types` contains `"*/*"`: reject — `*/*` splits into a base type of `"*"`, which never equals a real mime type's base, so it silently matches **nothing** (an accidental deny-all) rather than the "allow everything" the caller almost certainly intended; the correct way to express "no restriction" is to omit the field entirely - `inst-validate-star-slash-star-allowed`
+3. [x] - `p2` - **IF** `size_limits.per_mime` contains an entry with `mime == "*/*"`: reject, same reasoning — use `size_limits.max_bytes` for a global limit instead - `inst-validate-star-slash-star-per-mime`
 4. [x] - `p2` - RETURN `Ok(())` otherwise - `inst-validate-return`
 
 ## 4. States (CDSL)

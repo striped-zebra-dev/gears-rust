@@ -659,6 +659,7 @@ impl MultipartService {
     /// @cpt-cf-file-storage-fr-multipart-upload
     /// @cpt-cf-file-storage-fr-audit-trail
     /// @cpt-dod:cpt-cf-file-storage-dod-multipart-complete:p1
+    /// @cpt-dod:cpt-cf-file-storage-dod-content-hash-modes-multipart-composite:p2
     #[tracing::instrument(skip_all)]
     pub async fn complete_multipart_upload(
         &self,
@@ -803,6 +804,11 @@ impl MultipartService {
         // parts' sizes; parts are listed in ascending part-number order (the
         // repo's `list_parts` `ORDER BY part_number`), which for any valid
         // plan is identical to ascending offset order.
+        // @cpt-begin:cpt-cf-file-storage-algo-combine-part-hashes:p1:inst-combine-sort
+        // `parts` is already in ascending part_number order (`list_parts`'s
+        // `ORDER BY part_number`, verified gapless by the missing-parts diff
+        // above), which for any valid plan is identical to ascending offset
+        // order -- no separate sort step is needed here.
         let mut backend_parts: Vec<(u32, u64, [u8; 32], String)> = Vec::with_capacity(parts.len());
         let mut running_offset: u64 = 0;
         for p in &parts {
@@ -823,12 +829,14 @@ impl MultipartService {
             ));
             running_offset += u64::try_from(p.size).unwrap_or(0);
         }
+        // @cpt-end:cpt-cf-file-storage-algo-combine-part-hashes:p1:inst-combine-sort
 
         // Assemble on the backend, which builds the offset-manifest and its
         // `root` from the per-part digests+offsets above — **no re-read of the
         // assembled object** (ADR-0006). `root` becomes the version's
         // `hash_value`; the manifest text is persisted in
         // `version_hash_manifest` transactionally with the version row below.
+        // @cpt-begin:cpt-cf-file-storage-algo-combine-part-hashes:p1:inst-combine-sha256
         let (manifest, root) = backend
             .complete_multipart(
                 &backend_path,
@@ -836,8 +844,11 @@ impl MultipartService {
                 &backend_parts,
             )
             .await?;
+        // @cpt-end:cpt-cf-file-storage-algo-combine-part-hashes:p1:inst-combine-sha256
+        // @cpt-begin:cpt-cf-file-storage-algo-combine-part-hashes:p1:inst-combine-return
         let content_hash = root.to_vec();
         let manifest_text = manifest.to_wire_string();
+        // @cpt-end:cpt-cf-file-storage-algo-combine-part-hashes:p1:inst-combine-return
         let part_count = i32::try_from(parts.len())
             .map_err(|_| DomainError::validation("part_count", "part count overflows i32"))?;
         // @cpt-end:cpt-cf-file-storage-flow-multipart-complete:p1:inst-complete-assemble
@@ -994,13 +1005,16 @@ impl MultipartService {
         file_id: Uuid,
         upload_id: Uuid,
     ) -> Result<MultipartUploadStatus, DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-authz
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
         let _scope = self
             .authorizer
             .authorize(ctx, actions::WRITE, &file.gts_file_type, Some(file_id))
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-authz
 
+        // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-load-session
         let session = self
             .store
             .get_multipart_upload(upload_id)
@@ -1013,9 +1027,14 @@ impl MultipartService {
         if session.file_id != file_id {
             return Err(DomainError::multipart_upload_not_found(upload_id));
         }
+        // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-load-session
 
+        // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-load-parts
         let parts = self.store.list_multipart_parts(upload_id).await?;
+        // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-load-parts
+        // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-diff
         let missing_numbers = missing_part_numbers(&session, &parts);
+        // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-diff
 
         let now = OffsetDateTime::now_utc();
         let can_resume =
@@ -1040,8 +1059,11 @@ impl MultipartService {
 
         let mut missing = Vec::with_capacity(missing_numbers.len());
         for part_number in missing_numbers {
+            // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-recompute-bounds
             let (offset, size) = part_bounds(&session, part_number);
+            // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-recompute-bounds
             let upload_url = if can_resume {
+                // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-mint-urls
                 Some(self.mint_part_url(
                     file_id,
                     session.version_id,
@@ -1056,8 +1078,11 @@ impl MultipartService {
                     &request_id,
                     now,
                 )?)
+                // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-mint-urls
             } else {
+                // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-no-urls
                 None
+                // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-no-urls
             };
             missing.push(MissingPart {
                 part_number,
@@ -1078,6 +1103,7 @@ impl MultipartService {
 
         self.metrics
             .record_operation("introspect_multipart_upload", "ok");
+        // @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-return
         Ok(MultipartUploadStatus {
             upload_id,
             version_id: session.version_id,
@@ -1090,6 +1116,7 @@ impl MultipartService {
             received,
             missing,
         })
+        // @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-return
     }
 
     /// `DELETE /files/{id}/multipart/{upload_id}`: abort a multipart upload.

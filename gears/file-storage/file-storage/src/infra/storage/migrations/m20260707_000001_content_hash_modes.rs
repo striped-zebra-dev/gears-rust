@@ -23,7 +23,7 @@
 //! **untouched** — both modes use SHA-256 as their only underlying
 //! primitive, so there is nothing to widen.
 //!
-//! @cpt-cf-file-storage-dod-content-hash-modes-schema
+//! @cpt-dod:cpt-cf-file-storage-dod-content-hash-modes-schema:p2
 
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::ConnectionTrait;

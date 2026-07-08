@@ -2,7 +2,7 @@ Created:  2026-07-08 by Constructor Tech
 Updated:  2026-07-08 by Constructor Tech
 # Feature: Backend Migration
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-featstatus-backend-migration-implemented`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-featstatus-backend-migration-implemented`
 
 
 
@@ -28,7 +28,7 @@ Updated:  2026-07-08 by Constructor Tech
 
 ## 1. Feature Context
 
-- [x] `p2` - `cpt-cf-file-storage-feature-backend-migration`
+- [ ] `p2` - `cpt-cf-file-storage-feature-backend-migration`
 
 ### 1.1 Overview
 

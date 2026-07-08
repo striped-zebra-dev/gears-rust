@@ -370,6 +370,7 @@ impl VersionRepo {
     /// itself transitions out of `in_progress`.
     ///
     /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    /// @cpt-dod:cpt-cf-file-storage-dod-cleanup-live-multipart-guard:p1
     pub async fn list_pending_older_than<C: DBRunner>(
         &self,
         conn: &C,

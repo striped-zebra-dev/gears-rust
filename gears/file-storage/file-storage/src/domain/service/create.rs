@@ -186,6 +186,7 @@ impl FileService {
         // @cpt-cf-file-storage-fr-size-limits-policy
         // @cpt-cf-file-storage-fr-metadata-limits
         // @cpt-cf-file-storage-fr-storage-quota
+        // @cpt-dod:cpt-cf-file-storage-dod-policy-enforcement-wiring:p1
         let policy = self
             .get_effective_policy_internal(tenant_id, owner_id)
             .await?;

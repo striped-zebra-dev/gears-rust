@@ -133,7 +133,7 @@ ADR-0006 ahead of its own implementation and has since shipped alongside the res
 
 ### 2.2 [Content-Hash Modes](features/content-hash-modes.md) - MEDIUM
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-feature-content-hash-modes`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-feature-content-hash-modes`
 
 - **Type**: Core
 - **Phases**: Staged implementation (see [features/content-hash-modes.md](features/content-hash-modes.md) §5/§7 -- groundwork, schema migration, multipart-composite-sha256 implementation, docs) -- all stages shipped
@@ -189,7 +189,7 @@ ADR-0006 ahead of its own implementation and has since shipped alongside the res
 
 ### 2.3 [Policy Engine](features/policy-engine.md) - HIGH
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-feature-policy-engine`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-feature-policy-engine`
 
 - **Type**: Core
 - **Phases**: Single-phase implementation
@@ -252,7 +252,7 @@ ADR-0006 ahead of its own implementation and has since shipped alongside the res
 
 ### 2.4 [Retention Rules & Cleanup Sweep](features/retention-cleanup.md) - MEDIUM
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-feature-retention-cleanup`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-feature-retention-cleanup`
 
 - **Type**: Core
 - **Phases**: Single-phase implementation
@@ -428,7 +428,7 @@ ADR-0006 ahead of its own implementation and has since shipped alongside the res
 
 ### 2.7 [Backend Migration](features/backend-migration.md) - MEDIUM
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-feature-backend-migration`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-feature-backend-migration`
 
 - **Type**: Core
 - **Phases**: Single-phase implementation
@@ -452,7 +452,7 @@ ADR-0006 ahead of its own implementation and has since shipped alongside the res
 
 - **Requirements Covered**:
 
-  - [x] `p2` - `cpt-cf-file-storage-fr-backend-migration`
+  - [ ] `p2` - `cpt-cf-file-storage-fr-backend-migration`
 
 - **Design Principles Covered**:
 

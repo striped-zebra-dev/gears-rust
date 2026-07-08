@@ -61,10 +61,14 @@ pub(crate) fn build_manifest_and_root(
             digest: *digest,
         })
         .collect();
+    // @cpt-begin:cpt-cf-file-storage-algo-content-hash-modes-build-manifest:p1:inst-buildmanifest-sort
     entries.sort_by_key(|e| e.offset);
+    // @cpt-end:cpt-cf-file-storage-algo-content-hash-modes-build-manifest:p1:inst-buildmanifest-sort
     let manifest = Manifest::new(entries)?;
     let root = manifest.root();
+    // @cpt-begin:cpt-cf-file-storage-algo-content-hash-modes-build-manifest:p1:inst-buildmanifest-return
     Ok((manifest, root))
+    // @cpt-end:cpt-cf-file-storage-algo-content-hash-modes-build-manifest:p1:inst-buildmanifest-return
 }
 
 /// Optional features a backend may declare

@@ -2,7 +2,7 @@ Created:  2026-07-07 by Constructor Tech
 Updated:  2026-07-07 by Constructor Tech
 # Feature: Content-Hash Modes
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-featstatus-content-hash-modes-implemented`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-featstatus-content-hash-modes-implemented`
 
 
 
@@ -43,7 +43,7 @@ Updated:  2026-07-07 by Constructor Tech
 
 ## 1. Feature Context
 
-- [x] `p2` - `cpt-cf-file-storage-feature-content-hash-modes`
+- [ ] `p2` - `cpt-cf-file-storage-feature-content-hash-modes`
 
 ### 1.1 Overview
 

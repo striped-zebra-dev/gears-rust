@@ -58,9 +58,12 @@ impl PolicyService {
         policy_scope: PolicyScope,
         scope_owner_id: Option<Uuid>,
     ) -> Result<Option<StoredPolicy>, DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-authz
         let scope = self
             .authorize_scope_owner(ctx, actions::READ, scope_owner_id)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-authz
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-load
         self.store
             .get_policy(
                 &scope,
@@ -69,6 +72,7 @@ impl PolicyService {
                 scope_owner_id,
             )
             .await
+        // @cpt-end:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-load
     }
 
     /// Set (upsert) the policy for a scope. Tenant-level policy requires the
@@ -86,16 +90,22 @@ impl PolicyService {
         // `WRITE` — there is no "owner" to compare at tenant scope. Tightening
         // tenant-scope writes to require `ADMIN_POLICY` as well is a follow-up
         // the team may choose to make; not mandated here.
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-authz
         let scope = self
             .authorize_scope_owner(ctx, actions::WRITE, scope_owner_id)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-authz
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-validate
         Self::validate_policy_body(&policy_scope, scope_owner_id, &body)?;
+        // @cpt-end:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-validate
         let now = OffsetDateTime::now_utc();
         let tenant_id = ctx.subject_tenant_id();
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-upsert
         let policy_id = self
             .store
             .upsert_policy(&scope, tenant_id, &policy_scope, scope_owner_id, &body, now)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-upsert
         Ok(StoredPolicy {
             policy_id,
             tenant_id,
@@ -120,12 +130,15 @@ impl PolicyService {
         ctx: &SecurityContext,
         user_owner_id: Option<Uuid>,
     ) -> Result<EffectivePolicy, DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-authz
         let scope = self
             .authorizer
             .authorize(ctx, actions::READ, "", None)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-authz
         let tenant_id = ctx.subject_tenant_id();
 
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-load
         let tenant_policy = self
             .store
             .get_policy(&scope, tenant_id, &PolicyScope::Tenant, None)
@@ -138,11 +151,14 @@ impl PolicyService {
             }
             None => None,
         };
+        // @cpt-end:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-load
 
+        // @cpt-begin:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-resolve
         Ok(PolicyResolver::resolve(
             tenant_policy.as_ref().map(|p| &p.body),
             user_policy.as_ref().map(|p| &p.body),
         ))
+        // @cpt-end:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-resolve
     }
 
     /// List retention rules for the caller's tenant.
@@ -152,13 +168,17 @@ impl PolicyService {
         &self,
         ctx: &SecurityContext,
     ) -> Result<Vec<StoredRetentionRule>, DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-authz
         let scope = self
             .authorizer
             .authorize(ctx, actions::READ, "", None)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-authz
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-load
         self.store
             .list_retention_rules(&scope, ctx.subject_tenant_id())
             .await
+        // @cpt-end:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-load
     }
 
     /// Create a new retention rule.
@@ -171,12 +191,17 @@ impl PolicyService {
         scope_target_id: Option<Uuid>,
         body: RetentionRuleBody,
     ) -> Result<StoredRetentionRule, DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-authz
         let scope = self
             .authorize_retention_scope(ctx, &retention_scope, scope_target_id)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-authz
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-validate
         Self::validate_retention_rule(&retention_scope, scope_target_id, &body)?;
+        // @cpt-end:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-validate
         let now = OffsetDateTime::now_utc();
         let tenant_id = ctx.subject_tenant_id();
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-insert
         let rule_id = self
             .store
             .insert_retention_rule(
@@ -188,6 +213,7 @@ impl PolicyService {
                 now,
             )
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-insert
         Ok(StoredRetentionRule {
             rule_id,
             tenant_id,
@@ -213,15 +239,21 @@ impl PolicyService {
         // only to make the authorization decision below, mirroring the
         // `require_file` prefetch pattern already used elsewhere in this gear),
         // then re-run the same scope-based check `create_retention_rule` uses.
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-load
         let rule = self
             .store
             .get_retention_rule(&AccessScope::allow_all(), rule_id)
             .await?
             .ok_or_else(|| DomainError::retention_rule_not_found(rule_id))?;
+        // @cpt-end:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-load
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-authz
         let scope = self
             .authorize_retention_scope(ctx, &rule.scope, rule.scope_target_id)
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-authz
+        // @cpt-begin:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-remove
         self.store.delete_retention_rule(&scope, rule_id).await
+        // @cpt-end:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-remove
     }
 
     // ── semantic validation (P2 remediation 0.11) ───────────────────────────────
@@ -245,17 +277,22 @@ impl PolicyService {
     ///   resolve a real file), but `User`-scope only rejects a missing target
     ///   for non-`ADMIN_POLICY` callers, so this closes the same gap for an
     ///   admin caller.
+    ///
+    /// @cpt-dod:cpt-cf-file-storage-dod-retention-semantic-validation:p2
     fn validate_retention_rule(
         scope: &RetentionScope,
         scope_target_id: Option<Uuid>,
         body: &RetentionRuleBody,
     ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-empty
         if body.age.is_none() && body.inactivity.is_none() && body.metadata.is_none() {
             return Err(DomainError::validation(
                 "body",
                 "retention rule must specify at least one of: age, inactivity, metadata",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-empty
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-zero
         if let Some(age) = &body.age
             && age.max_age_days < 1
         {
@@ -272,6 +309,8 @@ impl PolicyService {
                 "must be >= 1 (0 would match every file in the tenant immediately)",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-zero
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-target
         if matches!(scope, RetentionScope::User | RetentionScope::File) && scope_target_id.is_none()
         {
             return Err(DomainError::validation(
@@ -279,7 +318,10 @@ impl PolicyService {
                 "user/file-scope retention rule requires a scope_target_id",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-target
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-return
         Ok(())
+        // @cpt-end:cpt-cf-file-storage-algo-validate-retention-rule:p2:inst-validate-retention-return
     }
 
     /// Reject a policy body that would be dangerous or dead on write.
@@ -300,17 +342,22 @@ impl PolicyService {
     ///   omit `allowed_mime_types` entirely (`None`/empty already means
     ///   unrestricted), and a caller that wants "no per-mime override" should
     ///   omit the `per_mime` entry.
+    ///
+    /// @cpt-dod:cpt-cf-file-storage-dod-policy-semantic-validation:p2
     fn validate_policy_body(
         scope: &PolicyScope,
         scope_owner_id: Option<Uuid>,
         body: &PolicyBody,
     ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-user-owner
         if matches!(scope, PolicyScope::User) && scope_owner_id.is_none() {
             return Err(DomainError::validation(
                 "scope_owner_id",
                 "user-scope policy requires a scope_owner_id",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-user-owner
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-star-slash-star-allowed
         if body.allowed_mime_types.iter().any(|m| m == "*/*") {
             return Err(DomainError::validation(
                 "allowed_mime_types",
@@ -318,6 +365,8 @@ impl PolicyService {
                  allowed_mime_types entirely to allow all types",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-star-slash-star-allowed
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-star-slash-star-per-mime
         if body.size_limits.per_mime.iter().any(|o| o.mime == "*/*") {
             return Err(DomainError::validation(
                 "size_limits.per_mime",
@@ -325,7 +374,10 @@ impl PolicyService {
                  size_limits.max_bytes for a global limit instead",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-star-slash-star-per-mime
+        // @cpt-begin:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-return
         Ok(())
+        // @cpt-end:cpt-cf-file-storage-algo-validate-policy-body:p2:inst-validate-return
     }
 
     // ── authorization helpers ────────────────────────────────────────────────

@@ -195,10 +195,11 @@ Manifest Re-Verification").
 5. [x] - `p1` - Verify `SUM(part.size) == declared_size` (residual guard); RETURN 409 (generic) if mismatch - `inst-complete-size-verify`
 6. [x] - `p1` - Policy size check against the assembled total - `inst-complete-policy-check`
 7. [x] - `p1` - Backend: `CompleteMultipartUpload`, building the ADR-0006 offset-manifest and its root hash from the already-persisted per-part digests+offsets -- **no re-read** of the assembled object - `inst-complete-assemble`
-8. [x] - `p1` - DB: finalize the version row (`status: pending -> available`, real assembled `size`/composite `content_hash`/`hash_mode`/`part_count`/`manifest`); does **not** touch `content_id` - `inst-complete-finalize-version`
-9. [x] - `p1` - DB: UPDATE multipart_uploads SET status=completed WHERE upload_id = ? - `inst-complete-db-session`
-10. [x] - `p1` - RETURN **200** `{version_id, size, hash_algorithm, content_hash, hash_mode, part_count, manifest}` - `inst-complete-return`
-11. [ ] - `p2` - Client: separately calls `POST /files/{id}/bind {version_id}` under `If-Match` to swap `content_id` and make the content live - `inst-complete-bind-followup`
+8. [x] - `p1` - Post-assembly, pre-finalize: sniff the assembled object's leading bytes and validate against `session.declared_mime` (P2 remediation item 1.10, `cpt-cf-file-storage-fr-content-type-validation`); re-check the policy size ceiling against the resolved MIME; on mismatch fail **before** any DB finalize (the assembled blob becomes an orphan reclaimed by the orphan-reconciliation sweep) - `inst-complete-mime-validate`
+9. [x] - `p1` - DB: finalize the version row (`status: pending -> available`, real assembled `size`/composite `content_hash`/`hash_mode`/`part_count`/`manifest`); does **not** touch `content_id` - `inst-complete-finalize-version`
+10. [x] - `p1` - DB: UPDATE multipart_uploads SET status=completed WHERE upload_id = ? - `inst-complete-db-session`
+11. [x] - `p1` - RETURN **200** `{version_id, size, hash_algorithm, content_hash, hash_mode, part_count, manifest}` - `inst-complete-return`
+12. [ ] - `p2` - Client: separately calls `POST /files/{id}/bind {version_id}` under `If-Match` to swap `content_id` and make the content live - `inst-complete-bind-followup`
 
 ### Abort Multipart Upload
 
@@ -224,7 +225,9 @@ Manifest Re-Verification").
 
 ### Introspect and Resume Multipart Upload
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-flow-multipart-introspect` (item 3.4, shipped -- SHIP decision)
+- [x] `p2` - **ID**: `cpt-cf-file-storage-flow-multipart-introspect`
+
+**Item 3.4, shipped -- SHIP decision.**
 
 **Actor**: `cpt-cf-file-storage-actor-platform-user`
 
@@ -241,23 +244,14 @@ Manifest Re-Verification").
 
 **Steps**:
 1. [x] - `p1` - Client: GET /api/file-storage/v1/files/{id}/multipart/{upload_id} (no request body) - `inst-introspect-request`
-2. [x] - `p1` - Control plane: authorize `write` on `file_id` (same gate as initiate/complete/abort -- introspect hands
-   out live resume URLs, so it is not opened to a read-capable-but-not-write principal) - `inst-introspect-authz`
-3. [x] - `p1` - DB: SELECT multipart_uploads WHERE upload_id = ?; verify it belongs to `file_id` -- mask a foreign or
-   missing `upload_id` as `404` identically to `complete`'s guard - `inst-introspect-load-session`
+2. [x] - `p1` - Control plane: authorize `write` on `file_id` (same gate as initiate/complete/abort -- introspect hands out live resume URLs, so it is not opened to a read-capable-but-not-write principal) - `inst-introspect-authz`
+3. [x] - `p1` - DB: SELECT multipart_uploads WHERE upload_id = ?; verify it belongs to `file_id` -- mask a foreign or missing `upload_id` as `404` identically to `complete`'s guard - `inst-introspect-load-session`
 4. [x] - `p1` - DB: SELECT all reported rows from multipart_upload_parts WHERE upload_id = ? - `inst-introspect-load-parts`
-5. [x] - `p1` - Diff the plan's expected part numbers against the reported ones using the same
-   `cpt-cf-file-storage-algo-compute-parts-plan`-derived helper `complete` uses (item 3.3's `missing_part_numbers`) --
-   `inst-introspect-diff`
-6. [x] - `p1` - FOR EACH missing part number: recompute its `(offset, size)` from the session's persisted
-   `(declared_size, part_size)` columns - `inst-introspect-recompute-bounds`
-7. [x] - `p1` - **IF** state == in_progress AND expires_at > now: mint a fresh signed part URL for each missing part,
-   reusing the initiate path's per-part token-minting helper, with the token `exp` capped at the session's own
-   `expires_at` (never a fresh full TTL) - `inst-introspect-mint-urls`
+5. [x] - `p1` - Diff the plan's expected part numbers against the reported ones using the same `cpt-cf-file-storage-algo-compute-parts-plan`-derived helper `complete` uses (item 3.3's `missing_part_numbers`) -- `inst-introspect-diff`
+6. [x] - `p1` - FOR EACH missing part number: recompute its `(offset, size)` from the session's persisted `(declared_size, part_size)` columns - `inst-introspect-recompute-bounds`
+7. [x] - `p1` - **IF** state == in_progress AND expires_at > now: mint a fresh signed part URL for each missing part, reusing the initiate path's per-part token-minting helper, with the token `exp` capped at the session's own `expires_at` (never a fresh full TTL) - `inst-introspect-mint-urls`
 8. [x] - `p1` - **ELSE** (terminal or expired session): omit `upload_url` from every missing part - `inst-introspect-no-urls`
-9. [x] - `p1` - RETURN 200 {upload_id, version_id, state, declared_mime, declared_size, part_size, created_at,
-   expires_at, received: [{part_number, size, uploaded_at}], missing: [{part_number, offset, size, upload_url?}]} -
-   `inst-introspect-return`
+9. [x] - `p1` - RETURN 200 {upload_id, version_id, state, declared_mime, declared_size, part_size, created_at, expires_at, received: [{part_number, size, uploaded_at}], missing: [{part_number, offset, size, upload_url?}]} - `inst-introspect-return`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -297,7 +291,7 @@ Internal system functions that do not interact with actors directly; called by a
 
 ### Combine Part Hashes at Complete
 
-- [ ] `p1` - **ID**: `cpt-cf-file-storage-algo-combine-part-hashes`
+- [x] `p1` - **ID**: `cpt-cf-file-storage-algo-combine-part-hashes`
 
 **Input**: ordered list of (part_number, offset, part_hash) from multipart_upload_parts; part_hash_algorithm (always SHA-256)
 **Output**: root_hash (hex string), manifest (wire-format text)

@@ -14,6 +14,7 @@ date: 2026-06-20
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
   - [Implementation note (P2, 2026-07)](#implementation-note-p2-2026-07)
+  - [Claim-set evolution (P2 1.11, 2026-07)](#claim-set-evolution-p2-111-2026-07)
 - [Token Opacity Contract](#token-opacity-contract)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
   - [Encoding: opaque token (chosen) vs discrete fields (rejected)](#encoding-opaque-token-chosen-vs-discrete-fields-rejected)

@@ -138,6 +138,7 @@ impl CleanupEngine {
     ///
     /// @cpt-cf-file-storage-fr-orphan-reconciliation
     /// @cpt-cf-file-storage-fr-retention-policies
+    /// @cpt-dod:cpt-cf-file-storage-dod-cleanup-engine:p1
     #[tracing::instrument(skip_all)]
     pub async fn run_sweep(&self) -> SweepResult {
         let mut result = SweepResult::default();
@@ -146,24 +147,32 @@ impl CleanupEngine {
             time::Duration::seconds(i64::try_from(self.config.orphan_grace_secs).unwrap_or(3600));
         let grace_cutoff = now - grace;
 
+        // @cpt-begin:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-best-effort
         // Step 1 -- abandoned pending versions (+ the parent `files` row, if
         // reclaiming the version leaves it a permanent zero-version orphan).
+        // @cpt-begin:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step1
         let (pending_deleted, files_deleted) =
             self.sweep_abandoned_pending(grace_cutoff, now).await;
         result.abandoned_pending_deleted += pending_deleted;
         result.abandoned_files_deleted += files_deleted;
+        // @cpt-end:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step1
 
         // Step 2 -- expired multipart sessions.
+        // @cpt-begin:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step2
         result.expired_multipart_aborted += self.sweep_expired_multipart(now).await;
+        // @cpt-end:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step2
 
         // Step 3 -- retention-policy expiry.
+        // @cpt-begin:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step3
         result.retention_expired_deleted += self.sweep_retention_expiry(now).await;
+        // @cpt-end:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step3
 
         // Step 4 -- expired idempotency-key rows (P2 remediation 1.9). The
         // `audit_outbox`/`events_outbox` tables are deliberately NOT swept
         // here: `published_at` stays `NULL` until the Tier 4 EventBroker
         // relay exists, so a row-age-based purge would silently drop rows
         // that were never delivered.
+        // @cpt-begin:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step4
         result.idempotency_keys_deleted += self
             .store
             .delete_expired_idempotency_keys(now)
@@ -172,8 +181,12 @@ impl CleanupEngine {
                 tracing::warn!(error = ?e, "cleanup: failed to delete expired idempotency keys");
                 0
             });
+        // @cpt-end:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-step4
+        // @cpt-end:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-best-effort
 
+        // @cpt-begin:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-return
         result
+        // @cpt-end:cpt-cf-file-storage-algo-run-sweep:p1:inst-sweep-return
     }
 
     // ── private sweep methods ──────────────────────────────────────────────────
@@ -190,6 +203,7 @@ impl CleanupEngine {
     /// is still live, not a value re-sampled inside the query layer.
     ///
     /// Returns `(pending_versions_deleted, orphan_files_deleted)`.
+    // @cpt-begin:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-list
     async fn sweep_abandoned_pending(
         &self,
         grace_cutoff: OffsetDateTime,
@@ -209,6 +223,7 @@ impl CleanupEngine {
                 return (0, 0);
             }
         };
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-list
 
         let mut pending_count = 0_usize;
         let mut files_count = 0_usize;
@@ -225,7 +240,9 @@ impl CleanupEngine {
             pending_count += pending;
             files_count += files;
         }
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-return
         (pending_count, files_count)
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-return
     }
 
     /// Delete one abandoned pending version row, clean up its backend blob,
@@ -250,6 +267,7 @@ impl CleanupEngine {
         backend_id: &str,
         backend_path: &str,
     ) -> (usize, usize) {
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-audit-delete
         let audit = AuditEntry {
             tenant_id: Uuid::nil(),
             actor_kind: "system".to_owned(),
@@ -264,8 +282,10 @@ impl CleanupEngine {
             occurred_at: OffsetDateTime::now_utc(),
         };
         match self.store.delete_version(file_id, version_id, audit).await {
+            // @cpt-end:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-audit-delete
             Ok(true) => {
                 // @cpt-cf-file-storage-fr-usage-reporting
+                // @cpt-begin:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-usage
                 // Debit the pending version's bytes; `file_count_delta` is
                 // `0` because only the version row is gone here, not the
                 // parent file (that follow-on debit, if any, is reported
@@ -280,11 +300,16 @@ impl CleanupEngine {
                         file_count_delta: 0,
                     });
                 }
+                // @cpt-end:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-usage
 
                 // Best-effort blob cleanup -- a failure here leaves an unreachable
                 // orphan blob which is acceptable in P2.
+                // @cpt-begin:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-blob
                 self.best_effort_delete(backend_id, backend_path).await;
+                // @cpt-end:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-blob
+                // @cpt-begin:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-orphan-file
                 let files_deleted = self.maybe_delete_orphaned_file(file_id).await;
+                // @cpt-end:cpt-cf-file-storage-algo-sweep-abandoned-pending:p1:inst-sweep-pending-orphan-file
                 (1, files_deleted)
             }
             Ok(false) => {
@@ -460,6 +485,7 @@ impl CleanupEngine {
     }
 
     /// Abort in-progress multipart sessions whose `expires_at` has passed.
+    // @cpt-begin:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-list
     async fn sweep_expired_multipart(&self, now: OffsetDateTime) -> usize {
         let sessions = match self.store.list_expired_multipart_uploads(now).await {
             Ok(s) => s,
@@ -471,12 +497,15 @@ impl CleanupEngine {
                 return 0;
             }
         };
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-list
 
         let mut count = 0_usize;
         for session in sessions {
             count += self.abort_expired_multipart_session(session).await;
         }
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-return
         count
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-return
     }
 
     /// Abort one expired multipart session: win the session's own
@@ -492,6 +521,7 @@ impl CleanupEngine {
     /// version, so it must be left completely untouched.
     ///
     /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    /// @cpt-state:cpt-cf-file-storage-state-retention-cleanup-multipart-touch:p1
     async fn abort_expired_multipart_session(&self, session: MultipartUploadSession) -> usize {
         let abort_audit = AuditEntry {
             tenant_id: Uuid::nil(),
@@ -506,11 +536,14 @@ impl CleanupEngine {
             }),
             occurred_at: OffsetDateTime::now_utc(),
         };
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-cas
         match self
             .store
             .abort_multipart_upload(session.upload_id, abort_audit)
             .await
         {
+            // @cpt-end:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-cas
+            // @cpt-begin:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-cleanup
             Ok(true) => {
                 // We won the CAS: no concurrent complete can have bound this
                 // version afterward. Safe to clean up the backend handle and
@@ -518,6 +551,8 @@ impl CleanupEngine {
                 self.cleanup_expired_session_version(&session).await;
                 1
             }
+            // @cpt-end:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-cleanup
+            // @cpt-begin:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-skip
             Ok(false) => {
                 // A concurrent complete/abort already transitioned the
                 // session out of in_progress. If it was `complete`, the
@@ -529,6 +564,7 @@ impl CleanupEngine {
                 );
                 0
             }
+            // @cpt-end:cpt-cf-file-storage-algo-sweep-expired-multipart:p1:inst-sweep-multipart-skip
             Err(e) => {
                 tracing::warn!(error = ?e, upload_id = %session.upload_id,
                     "cleanup: failed to mark expired multipart upload as aborted");
@@ -614,6 +650,7 @@ impl CleanupEngine {
     /// never materializes every file across every tenant at once — memory stays
     /// bounded regardless of deployment size. Retention rules are fetched once
     /// and reused across batches (the rule set is small relative to the files).
+    // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-rules
     async fn sweep_retention_expiry(&self, now: OffsetDateTime) -> usize {
         let all_rules = match self.store.list_all_retention_rules().await {
             Ok(r) => r,
@@ -626,7 +663,9 @@ impl CleanupEngine {
         if all_rules.is_empty() {
             return 0;
         }
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-rules
 
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-scan
         let mut count = 0_usize;
         let mut after: Option<Uuid> = None;
         // Keyset cursor loop: each page advances `after` past its last file_id.
@@ -644,7 +683,10 @@ impl CleanupEngine {
                 break;
             }
         }
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-scan
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-return
         count
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-return
     }
 
     /// Fetch the next keyset page of files for the retention sweep. Returns
@@ -688,6 +730,7 @@ impl CleanupEngine {
         now: OffsetDateTime,
     ) -> usize {
         // Gather applicable rules: tenant-scope, user-scope (owner), file-scope.
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-applicable
         let applicable: Vec<&crate::domain::policy::StoredRetentionRule> = all_rules
             .iter()
             .filter(|r| rule_applies_to_file(r, file))
@@ -696,8 +739,10 @@ impl CleanupEngine {
         if applicable.is_empty() {
             return 0;
         }
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-applicable
 
         // Fetch custom metadata for metadata-criterion rules.
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-metadata
         let metadata = match self.store.list_metadata(file.file_id).await {
             Ok(m) => m,
             Err(e) => {
@@ -709,8 +754,10 @@ impl CleanupEngine {
                 return 0;
             }
         };
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-metadata
 
         // OR semantics: if any rule triggers, delete the file.
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-match
         let should_expire = applicable
             .iter()
             .any(|r| rule_matches(&r.body, file, &metadata, now));
@@ -718,8 +765,11 @@ impl CleanupEngine {
         if !should_expire {
             return 0;
         }
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-match
 
+        // @cpt-begin:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-delete
         self.expire_file(file, now).await
+        // @cpt-end:cpt-cf-file-storage-algo-sweep-retention-expiry:p1:inst-sweep-retention-delete
     }
 
     /// Fetch a file's versions ahead of a retention deletion. Returns `None`

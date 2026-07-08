@@ -156,6 +156,7 @@ impl Store {
         let audit_repo = self.repos.audit.clone();
         let hash_mode_str = hash_mode.as_str();
         let now = OffsetDateTime::now_utc();
+        // @cpt-begin:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-commit-or-rollback
         self.db
             .db()
             .transaction_ref_mapped(move |tx| {
@@ -183,12 +184,15 @@ impl Store {
                                 .await?;
                         }
                         // @cpt-cf-file-storage-nfr-audit-completeness
+                        // @cpt-begin:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-insert-same-tx
                         audit_repo.insert(tx, &audit).await?;
+                        // @cpt-end:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-insert-same-tx
                     }
                     Ok::<bool, DomainError>(updated)
                 })
             })
             .await
+        // @cpt-end:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-commit-or-rollback
     }
 
     /// Fetch the `version_hash_manifest` text for a version, if one exists

@@ -34,7 +34,7 @@ Updated:  2026-07-08 by Constructor Tech
 
 ## 1. Feature Context
 
-- [x] `p2` - `cpt-cf-file-storage-feature-ownership-transfer`
+- [ ] `p2` - `cpt-cf-file-storage-feature-ownership-transfer`
 
 ### 1.1 Overview
 
@@ -103,7 +103,7 @@ owner changed but no audit trail exists for it, or vice versa.
 
 ### Transfer File Ownership
 
-- [ ] `p1` - **ID**: `cpt-cf-file-storage-flow-ownership-transfer`
+- [x] `p1` - **ID**: `cpt-cf-file-storage-flow-ownership-transfer`
 
 **Actor**: `cpt-cf-file-storage-actor-platform-user`
 
@@ -126,9 +126,9 @@ owner changed but no audit trail exists for it, or vice versa.
 - Caller lacks `WRITE` authorization on the file — `403`
 
 **Steps**:
-1. [ ] - `p1` - Client: POST /api/file-storage/v1/files/{id}/transfer with body {new_owner_kind, new_owner_id} - `inst-transfer-request`
+1. [x] - `p1` - Client: POST /api/file-storage/v1/files/{id}/transfer with body {new_owner_kind, new_owner_id} - `inst-transfer-request`
 2. [x] - `p1` - API: reject `new_owner_id == Uuid::nil()` with `400` before touching the DB (**the only target-owner validation implemented — see the §1.2 caveat**) - `inst-transfer-nil-check`
-3. [ ] - `p1` - API: parse `new_owner_kind`; reject anything other than `"user"`/`"app"` with `400` - `inst-transfer-kind-parse`
+3. [x] - `p1` - API: parse `new_owner_kind`; reject anything other than `"user"`/`"app"` with `400` - `inst-transfer-kind-parse`
 4. [x] - `p1` - Control plane: load the file scoped to the caller's tenant; authorize `WRITE` on `file_id` - `inst-transfer-authz`
 5. [x] - `p1` - Control plane: capture the file's custom metadata **before** the transfer, so a caller who loses read access under the new owner still receives accurate metadata in the response - `inst-transfer-capture-meta`
 6. [x] - `p1` - Build the `TransferOwnership` audit row and the `file.owner_transferred` file event, both carrying `from_owner_kind`/`from_owner_id`/`to_owner_kind`/`to_owner_id` - `inst-transfer-build-audit-event`
@@ -187,7 +187,7 @@ after commit; return the updated `File`. A transfer that matches zero rows
 
 ### Target-Owner Validation (PARTIAL)
 
-- [ ] `p2` - **ID**: `cpt-cf-file-storage-dod-ownership-transfer-target-validation` — **PARTIAL**
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-dod-ownership-transfer-target-validation`
 
 The system **SHOULD** verify that `new_owner_id` names a real, existing
 principal within the caller's tenant before committing a transfer. **Only the

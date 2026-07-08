@@ -220,16 +220,20 @@ impl FileService {
     // ── audit helpers (P2-M4) ────────────────────────────────────────────────
 
     /// Extract a stable actor kind string from the `SecurityContext`.
+    // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-actor-kind
     pub(super) fn actor_kind(ctx: &SecurityContext) -> &'static str {
         match ctx.subject_type() {
             Some("app") => "app",
             _ => "user",
         }
     }
+    // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-actor-kind
 
     /// Build a success audit entry for a file-scoped write operation.
     ///
     /// @cpt-cf-file-storage-fr-audit-trail
+    /// @cpt-dod:cpt-cf-file-storage-dod-audit-trail-transactional-write:p1
+    // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-identity
     pub(super) fn audit_ok(
         ctx: &SecurityContext,
         file_id: Option<Uuid>,
@@ -245,6 +249,7 @@ impl FileService {
             detail,
         )
     }
+    // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-identity
 
     // ── usage reporting helpers (P2-M5) ──────────────────────────────────────
 
@@ -252,6 +257,7 @@ impl FileService {
     /// propagated — a failing usage reporter must not block file operations.
     ///
     /// @cpt-cf-file-storage-fr-usage-reporting
+    // @cpt-begin:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-noop-if-unwired
     pub(super) fn report_usage(&self, delta: UsageDelta) {
         if let Some(reporter) = self.usage_reporter.clone() {
             tokio::spawn(async move {
@@ -259,6 +265,7 @@ impl FileService {
             });
         }
     }
+    // @cpt-end:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-noop-if-unwired
 
     /// Build a [`FileEvent`] for a write operation.
     ///

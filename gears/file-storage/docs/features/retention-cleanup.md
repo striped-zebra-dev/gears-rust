@@ -2,7 +2,7 @@ Created:  2026-07-08 by Constructor Tech
 Updated:  2026-07-08 by Constructor Tech
 # Feature: Retention Policies & Cleanup (Orphan Reconciliation)
 
-- [x] `p2` - **ID**: `cpt-cf-file-storage-featstatus-retention-cleanup-implemented`
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-featstatus-retention-cleanup-implemented`
 
 
 
@@ -24,6 +24,7 @@ Updated:  2026-07-08 by Constructor Tech
   - [Sweep Retention-Policy Expiry](#sweep-retention-policy-expiry)
   - [Validate Retention Rule on Write](#validate-retention-rule-on-write)
 - [4. States (CDSL)](#4-states-cdsl)
+  - [Multipart Session (owned by multipart-coordinator, driven here on a timer)](#multipart-session-owned-by-multipart-coordinator-driven-here-on-a-timer)
 - [5. Definitions of Done](#5-definitions-of-done)
   - [Retention Rule Domain Types and Administration Endpoints](#retention-rule-domain-types-and-administration-endpoints)
   - [Cleanup Engine and Background Sweep Scheduling](#cleanup-engine-and-background-sweep-scheduling)
@@ -35,7 +36,7 @@ Updated:  2026-07-08 by Constructor Tech
 
 ## 1. Feature Context
 
-- [x] `p2` - `cpt-cf-file-storage-feature-retention-cleanup`
+- [ ] `p2` - `cpt-cf-file-storage-feature-retention-cleanup`
 
 ### 1.1 Overview
 
@@ -134,12 +135,8 @@ documented as a process in §3 instead.
 
 **Steps**:
 1. [x] - `p1` - Client: POST /api/file-storage/v1/retention-rules {scope, scope_target_id?, body} - `inst-retention-create-request`
-2. [x] - `p1` - Authorize by scope: `Tenant` → plain `WRITE`; `User` → `ADMIN_POLICY`-first with a `WRITE`-plus-
-   target-match fallback (a missing target is a mismatch, not "no check" — unlike the policy-engine's tenant-scope
-   fallback); `File` → resolve the target file via `require_file` (closes a verifier finding: a foreign/missing
-   file surfaces as `FileNotFound`, not silently accepted) then require per-file `WRITE` - `inst-retention-create-authz`
-3. [x] - `p1` - Algorithm: `cpt-cf-file-storage-algo-validate-retention-rule` — reject a dead-on-write or
-   immediately-total-expiry body - `inst-retention-create-validate`
+2. [x] - `p1` - Authorize by scope: `Tenant` → plain `WRITE`; `User` → `ADMIN_POLICY`-first with a `WRITE`-plus-target-match fallback (a missing target is a mismatch, not "no check" — unlike the policy-engine's tenant-scope fallback); `File` → resolve the target file via `require_file` (closes a verifier finding: a foreign/missing file surfaces as `FileNotFound`, not silently accepted) then require per-file `WRITE` - `inst-retention-create-authz`
+3. [x] - `p1` - Algorithm: `cpt-cf-file-storage-algo-validate-retention-rule` — reject a dead-on-write or immediately-total-expiry body - `inst-retention-create-validate`
 4. [x] - `p1` - DB: INSERT the rule row - `inst-retention-create-insert`
 5. [x] - `p1` - RETURN 201 with the created rule - `inst-retention-create-return`
 
@@ -158,11 +155,8 @@ documented as a process in §3 instead.
 
 **Steps**:
 1. [x] - `p1` - Client: DELETE /api/file-storage/v1/retention-rules/{rule_id} - `inst-retention-delete-request`
-2. [x] - `p1` - DB (fetch-then-reauthorize): SELECT the rule via an `allow_all` scope purely to learn its
-   `(scope, scope_target_id)` — a bare `rule_id` carries no ownership information, so the coarse tenant-wide
-   `DELETE` check alone would let any tenant member delete any other member's rule; `404` if it does not exist - `inst-retention-delete-load`
-3. [x] - `p1` - Re-run the same scope-based authorization [Create Retention Rule](#create-retention-rule) uses,
-   against the rule's actual `(scope, scope_target_id)` - `inst-retention-delete-authz`
+2. [x] - `p1` - DB (fetch-then-reauthorize): SELECT the rule via an `allow_all` scope purely to learn its `(scope, scope_target_id)` — a bare `rule_id` carries no ownership information, so the coarse tenant-wide `DELETE` check alone would let any tenant member delete any other member's rule; `404` if it does not exist - `inst-retention-delete-load`
+3. [x] - `p1` - Re-run the same scope-based authorization [Create Retention Rule](#create-retention-rule) uses, against the rule's actual `(scope, scope_target_id)` - `inst-retention-delete-authz`
 4. [x] - `p1` - DB: DELETE the rule row - `inst-retention-delete-remove`
 5. [x] - `p1` - RETURN 204 - `inst-retention-delete-return`
 
@@ -203,21 +197,11 @@ retention_expired_deleted, idempotency_keys_deleted }`
 **Output**: `(pending_versions_deleted, orphan_files_deleted)`
 
 **Steps**:
-1. [x] - `p1` - DB: list `pending` version rows with `created_at < grace_cutoff`, **excluding** any version that is
-   still the backing version of a live `in_progress` multipart session (`multipart_uploads.expires_at > now`) — see
-   [Live-Multipart-Session Guard](#live-multipart-session-guard-p2-remediation-28) - `inst-sweep-pending-list`
+1. [x] - `p1` - DB: list `pending` version rows with `created_at < grace_cutoff`, **excluding** any version that is still the backing version of a live `in_progress` multipart session (`multipart_uploads.expires_at > now`) — see [Live-Multipart-Session Guard](#live-multipart-session-guard-p2-remediation-28) - `inst-sweep-pending-list`
 2. [x] - `p1` - FOR EACH candidate: write an `orphan_reconcile` audit row, then delete the version row - `inst-sweep-pending-audit-delete`
-3. [x] - `p1` - **IF** deleted: debit the reclaimed bytes via the usage reporter (fire-and-forget; `bytes_delta =
-   -size`, `file_count_delta = 0` — `size` is structurally `0` in practice since a version is only ever assigned a
-   nonzero size by `finalize_version`, which a reclaimed-here version never reached) - `inst-sweep-pending-usage`
-4. [x] - `p1` - Best-effort: delete the backend blob at the version's `(backend_id, backend_path)` — a failure
-   leaves an unreachable orphan blob, acceptable in P2 - `inst-sweep-pending-blob`
-5. [x] - `p1` - **IF** the parent file now has zero versions **AND** `content_id IS NULL` **AND** no
-   `in_progress`, unexpired multipart session still references it (the same guard as step 1, re-checked because a
-   session that has not yet expired could still legitimately have its backing version reclaimed by an unrelated
-   grace-window aging in the *same* sweep pass): delete the `files` row too, transactionally re-verifying both
-   conditions inside the delete so a version inserted in the gap is never lost — write a `file.deleted` event and
-   debit `file_count_delta = -1`, `bytes_delta = 0` (P2 remediation 2.8) - `inst-sweep-pending-orphan-file`
+3. [x] - `p1` - **IF** deleted: debit the reclaimed bytes via the usage reporter (fire-and-forget; `bytes_delta = -size`, `file_count_delta = 0` — `size` is structurally `0` in practice since a version is only ever assigned a nonzero size by `finalize_version`, which a reclaimed-here version never reached) - `inst-sweep-pending-usage`
+4. [x] - `p1` - Best-effort: delete the backend blob at the version's `(backend_id, backend_path)` — a failure leaves an unreachable orphan blob, acceptable in P2 - `inst-sweep-pending-blob`
+5. [x] - `p1` - **IF** the parent file now has zero versions **AND** `content_id IS NULL` **AND** no `in_progress`, unexpired multipart session still references it (the same guard as step 1, re-checked because a session that has not yet expired could still legitimately have its backing version reclaimed by an unrelated grace-window aging in the *same* sweep pass): delete the `files` row too, transactionally re-verifying both conditions inside the delete so a version inserted in the gap is never lost — write a `file.deleted` event and debit `file_count_delta = -1`, `bytes_delta = 0` (P2 remediation 2.8) - `inst-sweep-pending-orphan-file`
 6. [x] - `p1` - RETURN the two counts - `inst-sweep-pending-return`
 
 ### Sweep Expired Multipart Sessions
@@ -230,15 +214,9 @@ retention_expired_deleted, idempotency_keys_deleted }`
 
 **Steps**:
 1. [x] - `p1` - DB: list `in_progress` multipart sessions with `expires_at < now` - `inst-sweep-multipart-list`
-2. [x] - `p1` - FOR EACH: CAS the session `in_progress -> aborted` **first** — the same CAS-first pattern the
-   user-driven abort path uses, so a concurrent `complete_multipart_upload` racing on the same session row can win
-   instead (`in_progress -> completed`); only one side wins - `inst-sweep-multipart-cas`
-3. [x] - `p1` - **IF** the sweep won the CAS: best-effort abort the backend upload handle, then delete the pending
-   version row **status-guarded** (`status = pending` only) — a version a racing complete already flipped to
-   `available` via `finalize_version` (ahead of its own session CAS) is left untouched; the DELETE simply matches
-   zero rows - `inst-sweep-multipart-cleanup`
-4. [x] - `p1` - **IF** the sweep lost the CAS (session already transitioned): skip version cleanup entirely and log
-   — if the winner was `complete`, the version is now `Available` and bound; touching it would be data loss - `inst-sweep-multipart-skip`
+2. [x] - `p1` - FOR EACH: CAS the session `in_progress -> aborted` **first** — the same CAS-first pattern the user-driven abort path uses, so a concurrent `complete_multipart_upload` racing on the same session row can win instead (`in_progress -> completed`); only one side wins - `inst-sweep-multipart-cas`
+3. [x] - `p1` - **IF** the sweep won the CAS: best-effort abort the backend upload handle, then delete the pending version row **status-guarded** (`status = pending` only) — a version a racing complete already flipped to `available` via `finalize_version` (ahead of its own session CAS) is left untouched; the DELETE simply matches zero rows - `inst-sweep-multipart-cleanup`
+4. [x] - `p1` - **IF** the sweep lost the CAS (session already transitioned): skip version cleanup entirely and log — if the winner was `complete`, the version is now `Available` and bound; touching it would be data loss - `inst-sweep-multipart-skip`
 5. [x] - `p1` - RETURN the count of sessions the sweep itself won and aborted - `inst-sweep-multipart-return`
 
 ### Sweep Retention-Policy Expiry
@@ -250,22 +228,12 @@ retention_expired_deleted, idempotency_keys_deleted }`
 **Output**: count of files deleted
 
 **Steps**:
-1. [x] - `p1` - DB: list all retention rules across all tenants and scopes; **IF** empty, skip the file scan
-   entirely - `inst-sweep-retention-rules`
-2. [x] - `p1` - Scan all files in keyset-paginated batches of 500 (by `file_id`, `after`-cursor), so the sweep never
-   materializes every file across every tenant in memory regardless of deployment size - `inst-sweep-retention-scan`
-3. [x] - `p1` - FOR EACH file in a batch: gather rules applicable by scope (`Tenant` → always; `User` →
-   `rule.scope_target_id == file.owner_id`; `File` → `rule.scope_target_id == file.file_id`), restricted to the
-   file's own tenant - `inst-sweep-retention-applicable`
-4. [x] - `p1` - **IF** any applicable rule: fetch the file's custom metadata (needed for a metadata-criterion rule);
-   a fetch failure skips the file (logged) rather than treating it as "no metadata, no match" - `inst-sweep-retention-metadata`
-5. [x] - `p1` - Evaluate OR semantics across the file's applicable rules — the first matching criterion (age:
-   `now - created_at > max_age_days`; inactivity: `now - last_modified_at > inactivity_days`, **not** reset by
-   downloads, only by writes; metadata: an exact key/value match) triggers expiry - `inst-sweep-retention-match`
-6. [x] - `p1` - **IF** expiring: write a `retention_delete` audit row and a `file.deleted` event on the same
-   transactional-outbox path user-initiated deletes use, delete the file (all versions + the `files` row), debit
-   total bytes and `file_count_delta = -1` via the usage reporter, then best-effort delete each version's backend
-   blob - `inst-sweep-retention-delete`
+1. [x] - `p1` - DB: list all retention rules across all tenants and scopes; **IF** empty, skip the file scan entirely - `inst-sweep-retention-rules`
+2. [x] - `p1` - Scan all files in keyset-paginated batches of 500 (by `file_id`, `after`-cursor), so the sweep never materializes every file across every tenant in memory regardless of deployment size - `inst-sweep-retention-scan`
+3. [x] - `p1` - FOR EACH file in a batch: gather rules applicable by scope (`Tenant` → always; `User` → `rule.scope_target_id == file.owner_id`; `File` → `rule.scope_target_id == file.file_id`), restricted to the file's own tenant - `inst-sweep-retention-applicable`
+4. [x] - `p1` - **IF** any applicable rule: fetch the file's custom metadata (needed for a metadata-criterion rule); a fetch failure skips the file (logged) rather than treating it as "no metadata, no match" - `inst-sweep-retention-metadata`
+5. [x] - `p1` - Evaluate OR semantics across the file's applicable rules — the first matching criterion (age: `now - created_at > max_age_days`; inactivity: `now - last_modified_at > inactivity_days`, **not** reset by downloads, only by writes; metadata: an exact key/value match) triggers expiry - `inst-sweep-retention-match`
+6. [x] - `p1` - **IF** expiring: write a `retention_delete` audit row and a `file.deleted` event on the same transactional-outbox path user-initiated deletes use, delete the file (all versions + the `files` row), debit total bytes and `file_count_delta = -1` via the usage reporter, then best-effort delete each version's backend blob - `inst-sweep-retention-delete`
 7. [x] - `p1` - RETURN the total deleted across all pages - `inst-sweep-retention-return`
 
 ### Validate Retention Rule on Write
@@ -280,13 +248,9 @@ P2 remediation 0.11 — same spirit as the policy-engine's write-time validation
 dangerous or permanently dead rather than silently accept it.
 
 **Steps**:
-1. [x] - `p2` - **IF** `age`, `inactivity`, and `metadata` are all absent: reject — the rule could never match any
-   file - `inst-validate-retention-empty`
-2. [x] - `p2` - **IF** `age.max_age_days < 1` or `inactivity.inactivity_days < 1` (i.e. `== 0`, both are `u32`):
-   reject — `0` would match every file in the tenant on the very next sweep tick, and there is no dry-run or undo - `inst-validate-retention-zero`
-3. [x] - `p2` - **IF** `scope ∈ {User, File}` and `scope_target_id` is absent: reject — a dead rule that can never
-   resolve to a target file (the `File` case is already unreachable via the authorization path's `require_file`
-   call, but this closes the same gap for an `ADMIN_POLICY` caller taking the `User` path) - `inst-validate-retention-target`
+1. [x] - `p2` - **IF** `age`, `inactivity`, and `metadata` are all absent: reject — the rule could never match any file - `inst-validate-retention-empty`
+2. [x] - `p2` - **IF** `age.max_age_days < 1` or `inactivity.inactivity_days < 1` (i.e. `== 0`, both are `u32`): reject — `0` would match every file in the tenant on the very next sweep tick, and there is no dry-run or undo - `inst-validate-retention-zero`
+3. [x] - `p2` - **IF** `scope ∈ {User, File}` and `scope_target_id` is absent: reject — a dead rule that can never resolve to a target file (the `File` case is already unreachable via the authorization path's `require_file` call, but this closes the same gap for an `ADMIN_POLICY` caller taking the `User` path) - `inst-validate-retention-target`
 4. [x] - `p2` - RETURN `Ok(())` otherwise - `inst-validate-retention-return`
 
 ## 4. States (CDSL)

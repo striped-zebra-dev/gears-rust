@@ -36,7 +36,7 @@ Updated:  2026-07-08 by Constructor Tech
 
 ## 1. Feature Context
 
-- [x] `p2` - `cpt-cf-file-storage-feature-audit-trail`
+- [ ] `p2` - `cpt-cf-file-storage-feature-audit-trail`
 
 ### 1.1 Overview
 
@@ -251,7 +251,9 @@ responsible for populating `tenant_id` correctly.
 
 ### Outbox Drain to a Downstream Sink (NOT IMPLEMENTED)
 
-- [ ] `p2` - **ID**: `cpt-cf-file-storage-dod-audit-trail-relay` — **NOT IMPLEMENTED, no target date**
+- [ ] `p2` - **ID**: `cpt-cf-file-storage-dod-audit-trail-relay`
+
+**NOT IMPLEMENTED, no target date.**
 
 The system **SHOULD** eventually drain unpublished `audit_outbox` rows to a
 platform audit sink (the same Tier-4 item 4.1 "EventBroker relay" that would

@@ -136,6 +136,11 @@ pub struct UpdateMetadataReq {
 }
 
 /// One content version (`GET /files/{id}/versions`).
+///
+/// Wire shape documented in `docs/api.md` (`hash_mode`/`part_count`/`manifest`
+/// fields, ADR-0006).
+///
+/// @cpt-dod:cpt-cf-file-storage-dod-content-hash-modes-docs:p2
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct VersionDto {

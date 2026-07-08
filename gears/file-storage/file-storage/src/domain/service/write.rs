@@ -106,6 +106,10 @@ impl FileService {
         size: i64,
         hash_value: Vec<u8>,
     ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-actor-request
+        // Entry point: the actor's write request (finalize is one of the
+        // audited operations recorded by `cpt-cf-file-storage-flow-audit-trail-record-write`).
+        // @cpt-end:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-actor-request
         if size < 0 {
             return Err(DomainError::validation("size", "must be non-negative"));
         }
@@ -141,14 +145,18 @@ impl FileService {
             &version_mime,
             backend.capabilities().max_size_bytes,
         );
+        // @cpt-begin:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-size-compare
         if let Some(limit) = effective_max
             && size > 0
             && size.cast_unsigned() > limit
         {
+            // @cpt-end:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-size-compare
+            // @cpt-begin:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-return
             return Err(DomainError::policy_size_exceeded(
                 limit,
                 "policy size limit",
             ));
+            // @cpt-end:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-return
         }
 
         // Never trust the caller's claimed size/hash: stream the blob
@@ -192,16 +200,23 @@ impl FileService {
         )?;
 
         // @cpt-cf-file-storage-fr-audit-trail
+        // @cpt-begin:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-build
         let audit = Self::audit_ok(
             ctx,
             Some(file_id),
+            // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-operation
             AuditOperation::FinalizeVersion,
+            // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-operation
+            // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-detail
             serde_json::json!({ "version_id": version_id, "size": size }),
+            // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-detail
         );
+        // @cpt-end:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-build
 
         // Persist the read-back-derived size and the verified hash, not the
         // caller's size claim. `validated_mime` is persisted in place of the
         // client's original declaration.
+        // @cpt-begin:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-pass-through
         let ok = self
             .store
             .finalize_version(
@@ -218,6 +233,7 @@ impl FileService {
                 audit,
             )
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-pass-through
         if !ok {
             // Distinguish "already finalized" (409, using the `version`
             // snapshot read earlier in this call) from "row is gone" (404).
@@ -244,7 +260,9 @@ impl FileService {
         });
 
         self.metrics.record_operation("finalize_upload", "ok");
+        // @cpt-begin:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-return
         Ok(())
+        // @cpt-end:cpt-cf-file-storage-flow-audit-trail-record-write:p1:inst-audit-return
     }
 
     /// `POST /files/{id}/bind`: swap the content pointer to `version_id` under
@@ -476,6 +494,7 @@ impl FileService {
     /// @cpt-cf-file-storage-fr-usage-reporting
     /// @cpt-cf-file-storage-fr-file-events
     /// @cpt-cf-file-storage-fr-audit-trail
+    /// @cpt-dod:cpt-cf-file-storage-dod-ownership-transfer-endpoint:p1
     pub async fn transfer_ownership(
         &self,
         ctx: &SecurityContext,
@@ -483,25 +502,30 @@ impl FileService {
         new_owner_kind: file_storage_sdk::OwnerKind,
         new_owner_id: Uuid,
     ) -> Result<File, DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-nil-check
         if new_owner_id.is_nil() {
             return Err(DomainError::validation(
                 "new_owner_id",
                 "must not be the nil UUID",
             ));
         }
+        // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-nil-check
 
+        // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-authz
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
         let scope = self
             .authorizer
             .authorize(ctx, actions::WRITE, &file.gts_file_type, Some(file_id))
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-authz
 
         let now = OffsetDateTime::now_utc();
         let tenant_id = file.tenant_id;
         let old_owner_id = file.owner_id;
         let new_owner_kind_str = new_owner_kind.as_str().to_owned();
 
+        // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-build-audit-event
         // @cpt-cf-file-storage-fr-audit-trail
         let audit = Self::audit_ok(
             ctx,
@@ -528,7 +552,9 @@ impl FileService {
                 "to_owner_id": new_owner_id,
             }),
         ));
+        // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-build-audit-event
 
+        // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-atomic-update
         let updated = self
             .store
             .transfer_ownership_atomic(
@@ -541,13 +567,18 @@ impl FileService {
                 event,
             )
             .await?;
+        // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-atomic-update
 
+        // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-not-found
         if !updated {
             return Err(DomainError::file_not_found(file_id));
         }
+        // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-not-found
 
         // @cpt-cf-file-storage-fr-usage-reporting
+        // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-usage-rebalance
         // Debit old owner, credit new owner. Bytes are unchanged.
+        // @cpt-begin:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-sum
         let total_bytes: i64 = self
             .store
             .list_versions(file_id)
@@ -556,18 +587,24 @@ impl FileService {
             .filter(|v| v.status == file_storage_sdk::VersionStatus::Available)
             .map(|v| v.size)
             .sum();
+        // @cpt-end:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-sum
+        // @cpt-begin:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-debit
         self.report_usage(UsageDelta {
             tenant_id,
             owner_id: old_owner_id,
             bytes_delta: -total_bytes,
             file_count_delta: -1,
         });
+        // @cpt-end:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-debit
+        // @cpt-begin:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-credit
         self.report_usage(UsageDelta {
             tenant_id,
             owner_id: new_owner_id,
             bytes_delta: total_bytes,
             file_count_delta: 1,
         });
+        // @cpt-end:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-credit
+        // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-usage-rebalance
 
         self.store.require_file(&scope, file_id).await
     }
@@ -636,14 +673,18 @@ impl FileService {
             &version_mime,
             backend.capabilities().max_size_bytes,
         );
+        // @cpt-begin:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-size-compare
         if let Some(limit) = effective_max
             && size > 0
             && size.cast_unsigned() > limit
         {
+            // @cpt-end:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-size-compare
+            // @cpt-begin:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-return
             return Err(DomainError::policy_size_exceeded(
                 limit,
                 "policy size limit",
             ));
+            // @cpt-end:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-return
         }
 
         // Never trust the caller's claimed size/hash: stream the blob
